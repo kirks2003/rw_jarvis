@@ -5047,3 +5047,70 @@ changed, so browsers need a hard refresh (Ctrl+Shift+R) to see the text
 field; until then the slider alone still works and requests are unchanged.
 All three deployments are now at `2026.10.26-8`, identical in-image and on
 disk.
+
+## 2026-10-26: 2026.10.26-9 — budget ceiling 2048K→512K + rotating app log
+
+**Change (two fixes).**
+
+1. **Budget ceiling lowered 2048K → 512K.** Setting the token budget to
+   ~1000K (≈1,000,000 output tokens) failed with
+   `Brain HTTP 400 … max_tokens=1032192 cannot be greater than
+   max_model_len=max_total_tokens=1000000` — the default brain
+   (deepseek-v4-flash) has a **total context of 1,000,000 tokens**, and
+   `max_tokens` (output) must stay below it. The old 2048K ceiling let a user
+   request more output than the whole context. The ceiling is now **512K**
+   (512 × 1024 tokens) in the slider, the text field, and the server clamp —
+   safely below 1M with room for the prompt, and still ~100× more than any
+   answer needs (the model stops when the reply is done; the budget is only a
+   ceiling). Units are **K tokens** (1K = 1024 tokens), not KB. A
+   smaller-context model needs a lower budget.
+
+2. **Rotating app log.** The `jarvis` service now has the Docker `json-file`
+   logging driver with size-based rotation (`max-size: 10m`, `max-file: 5` =
+   50 MB max). Every app log line (structured JSON, `level`
+   info/warn/error) goes to the container's stdout and is written to a
+   rotating file — the Docker-native equivalent of logrotate (the host
+   `logrotate` must NOT also manage a container log). All request errors
+   (e.g. `Brain HTTP 400 …`) are logged at `level: "error"`. View with
+   `docker logs --tail 200 jarvis`, follow with `docker logs -f jarvis`,
+   errors only with `docker logs jarvis | grep '"level":"error"'`. (The log
+   file is per container lifetime — it resets on a redeploy, which is normal
+   for Docker; see AGENTS.md §9.4.)
+
+**Changed files:** `server.js` (version marker → 2026.10.26-9;
+`BRAIN_MAX_TOKENS_MAX` → `512 * 1024`), `public/app.js` (`BRAIN_BUDGET_MAX_K`
+→ `512`), `public/index.html` (slider `max="512"`, text field + description
+clarify K tokens and the model-context ceiling), `docker-compose.yml`
+(`logging:` block on the `jarvis` service). Tests: `tests/server.test.mjs`
+(clamp now 512K) + `tests/pipeline.browser.mjs` (clamp now 512K).
+
+**Verification (2026-10-26 ~19:16 UTC, dev worktree):** unit 214/214, browser
+66 pass / 0 fail / 2 skipped (the 2 intentional live-vm103 skips).
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-9-20261026T181316Z.tar.gz`,
+  scp the app files + the repo `docker-compose.yml` (identical to vm104's) +
+  the tests, build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-9`, in-image md5s match disk and repo
+  (`server.js e03b4735…`, `app.js b317be4b…`, `index.html e81e541e…`).
+  `docker inspect` confirms `LogConfig` = json-file, max-size 10m, max-file 5.
+  Host unit suite: 214/214.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-9-20261026T181506Z.tar.gz`.
+  The DR compose is host-specific (project name, image tag, external
+  volumes, no elevenlabs env), so the `logging:` block was added in place by
+  an idempotent script rather than overwriting the file; `docker compose
+  config` validated. Same app files + tests, same build/recreate.
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-9`, md5s
+  identical to vm104, `LogConfig` = json-file, 10m×5.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-9-20261026T181612Z.tar.gz`,
+  same in-place `logging:` insert + validate, same files, same build/recreate.
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-9`, md5s
+  identical to vm104, `LogConfig` = json-file, 10m×5.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). The slider
+ceiling changed, so browsers need a hard refresh (Ctrl+Shift+R); a saved
+value above 512K (e.g. the ~1000K that 400'd) clamps to 512K on reload. All
+three deployments are now at `2026.10.26-9`, identical in-image and on disk.
