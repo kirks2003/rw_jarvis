@@ -4809,3 +4809,81 @@ login sessions (the next sign-in re-establishes them, as designed). Panel
 statics changed, so browsers need a hard refresh (Ctrl+Shift+R) to see the
 slider and the always-animating spinner. All three deployments are now at
 `2026.10.26-4`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-5 — per-user graph-stored persona + cost-panel on/off switch
+
+**Change (user request).** Two features. (1) The assistant persona is no
+longer a single hardcoded butler: each owner stores their own personality in
+the knowledge graph (one `:Personality` node per owner — free text +
+`updated_at`, capped at 2000 chars, a separate label so it never pollutes
+`:Entity` listings). With the graph toggle on, the user's stored persona
+REPLACES the default `BRAIN_SYSTEM_PROMPT` butler for that user's requests;
+graph off (or no persona stored) falls back to the butler. The brain manages
+it through new `get-personality` (read; all owners for admin) and
+`set-personality` (write; owner-scoped for regular sessions, any registered
+owner for admin) graph MCP tools, so "speak German with me and use du" takes
+effect from the user's next request. (2) The endpoint panel's cost section
+gained an on/off **switch** (top-right, below Sign out, saved per browser):
+off hides the cost panel and the page reflows; polling and the backend
+billing cache keep running regardless.
+
+**Changed files:** `server.js` (version marker → 2026.10.26-5; `get-personality`
+added to `GRAPH_TOOL_NAMES`, `set-personality` to `GRAPH_WRITE_TOOL_NAMES` +
+`GRAPH_WRITE_SUCCESS_PREFIX` ("Stored personality"); both added to the
+brain-facing `graphTools()` schemas; prompt building reads
+`graphStore.readPersonality(user)` in the graph-on branch and substitutes the
+stored text for the default butler in the leading system message; a
+per-owner `mcpStates` note teaches the brain the two tools; `graphToolDetail`
+logs a truncated `text=`; the unknown-tool hint list and the test-only
+`GRAPH_PERSONALITY_SEED` startup seed hook), `graphdb.js`
+(`PERSONALITY_MAX_LENGTH` = 2000 + `sanitizePersonalityText`; Neo4j
+`readPersonality`/`writePersonality` over the read/write clients on the
+`:Personality` label + a `personality_owner` index; the memory-store twin;
+both exported), `mcp/graph.mjs` (`getPersonality`/`getPersonalityAll`/
+`setPersonality` Cypher; `get-personality` (read) + `set-personality` (write,
+admin write tool) on the surface; `validateWriteTool` caps/normalises the
+text and enforces owner scope; `handleGetPersonality`/`handleSetPersonality`
++ formatters; wired into the dispatch), `public/app.js` +
+`public/index.html` + `public/style.css` (cost-panel switch: `costsVisible`
+state persisted to `jarvis.costsVisible`, `syncCostsPanelVisibility()`
+hides the panel and reflows, switch wired in `loadConfig`), `.env.example`
+(`BRAIN_SYSTEM_PROMPT` documented as the fallback behind the per-user
+stored persona), `tests/graph.test.mjs` (memory-store personality
+round-trip/per-owner isolation/cap; the graph tool-surface assertions now
+include the two new tools), `tests/mcp-graph.test.mjs` (pin the new Cypher +
+tool surface; `validateWriteTool` set-personality owner scoping; the two
+formatters), `tests/server.test.mjs` (the stored persona replaces the butler
+in the leading system prompt, verified end to end via the test-only seed).
+
+**Verification (2026-10-26 ~16:50 UTC, dev worktree):** unit 211/211
+(baseline 206 + 5 new tests), browser 65 pass / 0 fail / 2 skipped (the 2
+intentional live-vm103 skips).
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-5-20261026T154144Z.tar.gz`,
+  scp `server.js` + `graphdb.js` + `mcp/graph.mjs` + `public/app.js` +
+  `public/index.html` + `public/style.css` + the three test files +
+  `.env.example`, build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-5`, in-image md5s match disk and repo
+  (`server.js 301fd946…`, `graphdb.js 64b3a85d…`,
+  `mcp/graph.mjs 692fd7cb…`, `public/app.js 756348ce…`,
+  `public/index.html 0a7ce0a9…`, `public/style.css e09efcb3…`). Host unit
+  suite: 211/211.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-5-20261026T154446Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-5`, md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-5-20261026T154605Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-5`, md5s identical to vm104.
+
+**Effect on live data:** the container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). One live data
+write, by design: Roman's initial persona was seeded into the primary
+(vm104) graph as `:Personality {owner: "Roman"}` — German, "du", keeping the
+witty-butler tone — via the app's own `writePersonality` (read back and
+confirmed). It is the only `:Personality` node and takes effect from Roman's
+next request with the graph toggle on. Panel statics changed, so browsers
+need a hard refresh (Ctrl+Shift+R) to see the cost switch. All three
+deployments are now at `2026.10.26-5`, identical in-image and on disk.
