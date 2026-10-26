@@ -648,36 +648,73 @@ test("the brain timeout slider persists per browser and rides with the chat requ
   assert.equal(await page.textContent("#brainTimeoutValue"), "42 min");
 });
 
-test("the brain token budget slider persists per browser and rides with the chat request", { timeout: 45000 }, async (t) => {
+test("the brain token budget slider and text field share one value and ride with the chat request", { timeout: 45000 }, async (t) => {
   const { page, calls } = await setup(t, async (n) => ({
     text: n === 1 ? "Rocky" : n === 2 ? "" : "What is one plus one?",
   }), { config: { user: "Roman" } });
   await page.evaluate(() => { Math.random = () => 0; });
-  // The endpoint panel's budget slider is enabled once the config arrives
-  // (4K default, not the 1K floor, so a fresh browser keeps the 4096 behavior).
+  // The budget slider and text field are enabled once the config arrives
+  // (4K default, not the 1K floor, so a fresh browser keeps the 4096
+  // behavior). Both controls show the same K value.
   await page.waitForFunction(() => !document.getElementById("brainBudgetSlider").disabled);
   assert.equal(await page.inputValue("#brainBudgetSlider"), "4");
+  assert.equal(await page.inputValue("#brainBudgetInput"), "4");
   assert.equal(await page.textContent("#brainBudgetValue"), "4K");
-  // Raise it to 32K; the value label updates and the choice is saved per
-  // browser (no pipeline interrupt — it bounds the next brain request only).
+  // Moving the slider updates the text field (same value, saved per browser).
   await page.evaluate(() => {
     const slider = document.getElementById("brainBudgetSlider");
-    slider.value = "32";
+    slider.value = "16";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  assert.equal(await page.inputValue("#brainBudgetInput"), "16");
+  assert.equal(await page.textContent("#brainBudgetValue"), "16K");
+  // Typing an exact value in the text field moves the slider (same value) and
+  // takes effect on commit (change), not per keystroke.
+  await page.evaluate(() => {
+    const input = document.getElementById("brainBudgetInput");
+    input.value = "32";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.inputValue("#brainBudgetSlider"), "32");
+  assert.equal(await page.inputValue("#brainBudgetInput"), "32");
   assert.equal(await page.textContent("#brainBudgetValue"), "32K");
   assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainBudgetK")), "32");
+  // A non-numeric entry reverts to the last value; an out-of-range one clamps
+  // to the 1K..2048K window.
+  await page.evaluate(() => {
+    const input = document.getElementById("brainBudgetInput");
+    input.value = "abc";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.inputValue("#brainBudgetInput"), "32");
+  await page.evaluate(() => {
+    const input = document.getElementById("brainBudgetInput");
+    input.value = "9999";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.inputValue("#brainBudgetInput"), "2048");
+  assert.equal(await page.inputValue("#brainBudgetSlider"), "2048");
+  assert.equal(await page.textContent("#brainBudgetValue"), "2048K");
+  // Back to a known value for the pipeline.
+  await page.evaluate(() => {
+    const input = document.getElementById("brainBudgetInput");
+    input.value = "32";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainBudgetK")), "32");
   // Utterance 1 is the spoken greeting, 2 the thinking line of the command,
-  // 3 its answer — the answer proves the brain request (with the budget) ran.
+  // 3 its answer — the answer proves the brain request (with the field value)
+  // ran.
   await page.waitForFunction(() => window.savedUtterances.length === 3, null, { timeout: 30000 });
   await page.click("#stopButton");
   assert.deepEqual(calls.prompts, ["What is one plus one?"]);
   assert.equal(calls.brainMaxTokens, 32 * 1024);
-  // The saved value survives a reload (stop first so the page starts in
-  // standby, like the timeout test).
+  // The saved value survives a reload, on both controls (stop first so the
+  // page starts in standby, like the timeout test).
   await page.reload();
   await page.waitForFunction(() => !document.getElementById("brainBudgetSlider").disabled);
   assert.equal(await page.inputValue("#brainBudgetSlider"), "32");
+  assert.equal(await page.inputValue("#brainBudgetInput"), "32");
   assert.equal(await page.textContent("#brainBudgetValue"), "32K");
 });
 

@@ -697,6 +697,40 @@ button:disabled {
   color: var(--muted);
 }
 
+/* The brain token budget is set by either the slider or the text field; both
+   hold the same K value, so they sit on one row. The text field is a compact
+   numeric input for exact values (e.g. "128"). */
+.brain-budget-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.brain-budget-row input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: none;
+}
+
+.brain-budget-row input[type="text"] {
+  flex: none;
+  width: 4.5em;
+  padding: 6px 8px;
+  border: 1px solid rgba(66, 217, 255, 0.4);
+  border-radius: 10px;
+  color: var(--text);
+  background: #02050b;
+  font: inherit;
+  text-align: right;
+}
+
+.brain-budget-unit {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .endpoint-select {
   display: flex;
   align-items: center;

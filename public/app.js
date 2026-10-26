@@ -23,7 +23,7 @@ const el = Object.fromEntries([
   "languageSwitch", "languageStatus", "mcpMasterSwitch", "mcpMasterStatus",
   "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
   "brainTimeoutSlider", "brainTimeoutValue",
-  "brainBudgetSlider", "brainBudgetValue",
+  "brainBudgetSlider", "brainBudgetValue", "brainBudgetInput",
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
@@ -412,11 +412,31 @@ function applyBrainBudget(k) {
     ? Math.min(BRAIN_BUDGET_MAX_K, Math.max(BRAIN_BUDGET_MIN_K, Math.round(value)))
     : BRAIN_BUDGET_DEFAULT_K;
   el.brainBudgetSlider.value = String(brainBudgetK);
+  el.brainBudgetInput.value = String(brainBudgetK);
   el.brainBudgetValue.textContent = `${brainBudgetK}K`;
 }
 
 el.brainBudgetSlider.addEventListener("input", () => {
   applyBrainBudget(el.brainBudgetSlider.value);
+  try {
+    localStorage.setItem(brainBudgetStorageKey, String(brainBudgetK));
+  } catch (error) {
+    log("settings", "Could not save the brain token budget", { message: error.message });
+  }
+});
+
+// The text field is the exact-value counterpart of the slider: it commits on
+// blur/Enter (change), not per keystroke, so typing "128" is not applied as
+// "1", then "12", then "128". A valid number takes effect and moves the
+// slider; an empty or non-numeric entry reverts to the last value.
+el.brainBudgetInput.addEventListener("change", () => {
+  const raw = el.brainBudgetInput.value.trim();
+  const value = Number(raw);
+  if (raw === "" || !Number.isFinite(value)) {
+    el.brainBudgetInput.value = String(brainBudgetK);
+    return;
+  }
+  applyBrainBudget(value);
   try {
     localStorage.setItem(brainBudgetStorageKey, String(brainBudgetK));
   } catch (error) {
@@ -3559,6 +3579,7 @@ async function loadConfig(userFromLogin) {
       log("settings", "Could not load the brain token budget", { message: error.message });
     }
     el.brainBudgetSlider.disabled = false;
+    el.brainBudgetInput.disabled = false;
     // Show the connection state of both active endpoints right away.
     testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
     testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);

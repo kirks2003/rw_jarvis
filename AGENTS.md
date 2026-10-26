@@ -121,12 +121,13 @@ Kandev task) no longer end in a "signal timed out".
 per-answer `max_tokens` covers its thinking tokens too — an undersized
 budget is spent on reasoning and the reply comes back empty
 (`finish_reason "length"`, "The brain spent its whole token budget on
-reasoning"). The endpoint panel's **Brain token budget** slider (1K–2048K,
-saved per browser) rides with each `/api/chat` as `brainMaxTokens`; the
-server clamps it to that window and uses it as `max_tokens` (default
-`BRAIN_MAX_TOKENS` env, 4096). It bounds the *tokens*, not the time — the
-Brain timeout slider above still bounds the wall clock, so the two work
-together: a bigger budget needs enough time to generate.
+reasoning"). The endpoint panel's **Brain token budget** control (a 1K–2048K
+slider plus a text field for exact values; both hold the same K and whichever
+is set takes effect, saved per browser) rides with each `/api/chat` as
+`brainMaxTokens`; the server clamps it to that window and uses it as
+`max_tokens` (default `BRAIN_MAX_TOKENS` env, 4096). It bounds the *tokens*,
+not the time — the Brain timeout slider above still bounds the wall clock, so
+the two work together: a bigger budget needs enough time to generate.
 
 **Per-user persona (2026-10-26):** the assistant's persona is no longer a
 single hardcoded butler. Each owner can store their own personality in the
@@ -324,10 +325,18 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
- - Latest: `2026.10.26-7`
+ - Latest: `2026.10.26-8`
  
 ### 7.1 Release notes
  
+- **`2026.10.26-8` (this repo):** the endpoint panel's **Brain token
+  budget** control gained a companion **text field** next to the slider. Both
+  hold the same K value and whichever you set takes effect: dragging the
+  slider updates the field, and typing an exact value (committed on
+  blur/Enter, clamped to 1K..2048K, non-numeric reverts to the last value)
+  moves the slider. No new request field — the field just sets the same
+  `brainMaxTokens` the slider already sent. Rolled out to all three hosts
+  2026-10-26.
 - **`2026.10.26-7` (this repo):** the endpoint panel gained a **Brain token
   budget** slider (1K–2048K, saved per browser) that rides with each
   `/api/chat` as `brainMaxTokens`; the server clamps it to that window and
