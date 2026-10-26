@@ -399,6 +399,19 @@ function trimText(value, max = 240) {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
+// The per-user Jarvis personality: the free-text persona the user wants the
+// assistant to talk with (language, formality — e.g. German "du" — tone and
+// character). It is stored one node per owner (label :Personality, separate
+// from :Entity so it never appears in the knowledge listings) and, when the
+// knowledge-graph MCP is on, it REPLACES the default butler system prompt for
+// that user. Whitespace is normalised and the text is length-capped so a
+// runaway value (or a prompt-injection riding on set-personality) cannot blow
+// up the system message.
+const PERSONALITY_MAX_LENGTH = 2000;
+function sanitizePersonalityText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, PERSONALITY_MAX_LENGTH);
+}
+
 function personaTraitsFromPrompt(prompt) {
   const out = [];
   const text = String(prompt || "");
@@ -684,6 +697,8 @@ function createGraphStore({
         "CREATE INDEX entity_owner_last_seen IF NOT EXISTS FOR (e:Entity) ON (e.owner, e.last_seen)",
         "CREATE INDEX entity_last_seen IF NOT EXISTS FOR (e:Entity) ON (e.last_seen)",
         "CREATE INDEX user_name IF NOT EXISTS FOR (u:User) ON (u.name)",
+        // One :Personality node per owner; the brain's prompt read pins owner.
+        "CREATE INDEX personality_owner IF NOT EXISTS FOR (p:Personality) ON (p.owner)",
       ];
       for (const statement of statements) await run(writeClient, statement);
       return { created: statements.length };
@@ -925,7 +940,42 @@ function createGraphStore({
           rank: personaRank(row.confidence, row.importance, row.decayScore),
         })),
       };
-      return context;
+       return context;
+     },
+
+    // The user's stored Jarvis personality (one :Personality node per owner).
+    // Read over the read client; returns { text, updatedAt } with text null
+    // when the user has not set one.
+    async readPersonality(user) {
+      const result = await run(readClient,
+        "MATCH (p:Personality {owner: $user}) RETURN p.text AS text, p.updated_at AS updatedAt LIMIT 1",
+        { user },
+      );
+      const row = rows(result)[0];
+      return row && row.text ? { text: String(row.text), updatedAt: row.updatedAt || null } : { text: null, updatedAt: null };
+    },
+
+    // Upsert the user's Jarvis personality (the write client). The text is
+    // normalised/capped here; an empty result is a no-op that returns the
+    // current state (an empty personality means "fall back to the default
+    // butler", which is also what deleting the node would give the reader).
+    async writePersonality({ user, text } = {}) {
+      const cleaned = sanitizePersonalityText(text);
+      if (!cleaned) {
+        const current = await run(readClient,
+          "MATCH (p:Personality {owner: $user}) RETURN p.text AS text, p.updated_at AS updatedAt LIMIT 1",
+          { user },
+        );
+        const row = rows(current)[0];
+        return row && row.text ? { text: String(row.text), updatedAt: row.updatedAt || null } : { text: null, updatedAt: null };
+      }
+      const now = new Date().toISOString();
+      const result = await run(writeClient,
+        "MERGE (p:Personality {owner: $owner}) SET p.text = $text, p.updated_at = $now RETURN p.text AS text, p.updated_at AS updatedAt",
+        { owner: user, text: cleaned, now },
+      );
+      const row = rows(result)[0];
+      return { text: String(row.text), updatedAt: row.updatedAt || now };
     },
 
     // The only write path in the app: the backend ingests a finished
@@ -1116,6 +1166,9 @@ function createMemoryStore(users = []) {
   const nodes = new Map();
   const edges = [];
   const personaByUser = new Map();
+  // Per-user Jarvis personality (the memory twin of the :Personality node):
+  // user -> { text, updatedAt }.
+  const personalities = new Map();
   let nextId = 1;
 
   function addNode({ name, type, owner = null, props = {} }) {
@@ -1528,9 +1581,26 @@ function createMemoryStore(users = []) {
             .slice(0, 2),
         },
       };
-    },
+     },
 
-   async upsertTurn({ user, entities = [], relations = [], subjects = [], metadata = {} }) {
+     // The memory twin of the Neo4j store's personality read/write.
+     async readPersonality(user) {
+       const entry = personalities.get(user);
+       return entry ? { text: entry.text, updatedAt: entry.updatedAt } : { text: null, updatedAt: null };
+     },
+
+     async writePersonality({ user, text } = {}) {
+       const cleaned = sanitizePersonalityText(text);
+       if (!cleaned) {
+         const entry = personalities.get(user);
+         return entry ? { text: entry.text, updatedAt: entry.updatedAt } : { text: null, updatedAt: null };
+       }
+       const now = new Date().toISOString();
+       personalities.set(user, { text: cleaned, updatedAt: now });
+       return { text: cleaned, updatedAt: now };
+     },
+
+    async upsertTurn({ user, entities = [], relations = [], subjects = [], metadata = {} }) {
       // Same one-node-per-user rule as the Neo4j store: an entity or relation
       // endpoint named after a registered user is that user's node, never an
       // entity (a person entity with a user's name is a proxy for that
@@ -1680,6 +1750,8 @@ module.exports = {
   isRelationType,
   normalizeRelationType,
   sanitizeName,
+  PERSONALITY_MAX_LENGTH,
+  sanitizePersonalityText,
   formatGraphContext,
   buildLuceneQuery,
   matchRelationTypes,

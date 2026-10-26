@@ -132,6 +132,15 @@ export const QUERIES = {
   // collision check (no other copy of $newName for $owner) runs in the
   // handler first — the (name, owner) key stays unique.
   renameEntity: "MATCH (e:Entity {owner: $owner}) WHERE toLower(e.name) = toLower($name) SET e.name = $newName, e.last_seen = $now RETURN e.name AS name, e.type AS type",
+  // The per-user Jarvis personality: one :Personality node per owner (a
+  // separate label from :Entity so it never leaks into the knowledge
+  // listings). The read is pinned to owner = the signed-in user; the admin
+  // variant lists every owner's personality (like the other admin reads).
+  getPersonality: "MATCH (p:Personality {owner: $user}) RETURN p.text AS text, p.updated_at AS updatedAt LIMIT 1",
+  getPersonalityAll: "MATCH (p:Personality) RETURN p.owner AS owner, p.text AS text, p.updated_at AS updatedAt ORDER BY p.owner LIMIT 50",
+  // The write mirrors the backend's graphdb.writePersonality upsert (the same
+  // :Personality shape), run over the write database user.
+  setPersonality: "MERGE (p:Personality {owner: $owner}) SET p.text = $text, p.updated_at = $now RETURN p.text AS text, p.updated_at AS updatedAt",
 };
 
 // "user" is injected by the backend on every call; the brain's tool schema
@@ -162,6 +171,11 @@ export const TOOLS = [
     name: "list-my-facts",
     description: "List the facts stored about the signed-in user (likes, ownership, family, home, work, the questions they asked — ASKED_ABOUT, rendered with the date and time of the question — ...), optionally filtered to one entity (about) or one relation type (relation, e.g. ASKED_ABOUT).",
     inputSchema: { type: "object", properties: { ...USER_PARAM, about: { type: "string", description: "Optional: only facts about this entity name." }, relation: { type: "string", description: "Optional: only this relation type, e.g. LIKES." } } },
+  },
+  {
+    name: "get-personality",
+    description: "Read the signed-in user's stored Jarvis personality (how the assistant is meant to talk to them: language, formality such as German 'du' vs formal 'Sie', tone and character). Returns the stored text, or a note that none is set yet. For admin sessions, every user's stored personality is listed.",
+    inputSchema: { type: "object", properties: { ...USER_PARAM } },
   },
   // Owner-scoped write/delete tools. Regular sessions may target only the
   // backend-injected user (owner defaults to that user); admin sessions may
@@ -221,6 +235,19 @@ export const TOOLS = [
         name: { type: "string", description: "The entity name to delete, e.g. 'Berlin'." },
       },
       required: ["owner", "name"],
+    },
+  },
+  {
+    name: "set-personality",
+    description: "Store the signed-in user's desired Jarvis personality (or, for admin sessions only, another registered owner's): the free text describing how the assistant should talk to them — language, formality (e.g. German 'du'), tone, character. It takes effect from the user's NEXT request. Use it when the user tells you how they want you to address or talk to them; confirm exactly what you stored.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...USER_PARAM,
+        owner: { type: "string", description: "The registered user the personality is stored for, e.g. 'Roman'." },
+        text: { type: "string", description: "The personality text, e.g. 'Antworte auf Deutsch und sprich mich immer mit du an.'" },
+      },
+      required: ["owner", "text"],
     },
   },
 ];
@@ -310,6 +337,19 @@ export function formatFactsAll(rows) {
   return `Stored facts per user: ${[...byUser.entries()].map(([user, list]) => `${user}: ${list.join("; ")}`).join("; ")}.`;
 }
 
+// The stored Jarvis personality, rendered for the brain. A single user's
+// personality is returned verbatim (it IS the persona); the admin variant
+// lists every owner's.
+export function formatPersonality(row) {
+  if (!row || !row.text) return "No personality is stored for this user yet — the assistant uses its default persona. You can set one with set-personality.";
+  return `The user's stored Jarvis personality (use it as your persona for this user):\n${row.text}`;
+}
+
+export function formatPersonalityAll(rows) {
+  if (!rows.length) return "No personalities are stored in the graph yet.";
+  return `Stored Jarvis personalities per user: ${rows.map((row) => `${row.owner}: ${row.text}`).join(" | ")}.`;
+}
+
 // --- Admin write tools -------------------------------------------------------
 
 // The fact edge query, built per endpoint-kind pair (like the ingestion's
@@ -328,7 +368,7 @@ export function factQuery(type, fromIsUser, toIsUser) {
 
 // The write/delete tools. Non-admin calls are owner-scoped to the
 // backend-injected user; admin calls may target any registered owner.
-export const ADMIN_WRITE_TOOLS = new Set(["store-entity", "store-fact", "rename-entity", "delete-entity"]);
+export const ADMIN_WRITE_TOOLS = new Set(["store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"]);
 
 // The registered-user list the backend injects (like user/admin): owner must
 // be one of them, so a brain — or a prompt injection riding on it — cannot
@@ -439,6 +479,13 @@ export function validateWriteTool(name, args, users) {
     const entityName = graphdb.sanitizeName(args.name);
     if (!entityName) return { ok: false, error: "name is required." };
     return { ok: true, params: { owner, name: entityName } };
+  }
+  if (name === "set-personality") {
+    // The text is normalised and capped here (same helper the backend uses),
+    // so a runaway value cannot reach the database or the system prompt.
+    const text = graphdb.sanitizePersonalityText(args.text);
+    if (!text) return { ok: false, error: "text is required (a non-empty personality)." };
+    return { ok: true, params: { owner, text } };
   }
   return { ok: false, error: `Unknown tool: ${name}` };
 }
@@ -639,11 +686,27 @@ function startServer() {
     // backend's own delete path: deleting the middle of a chain can free the
     // far side with no path to the owner's :User node left, and an entity
     // with no relation to its user does not belong in the world.
-    const swept = await runWrite(graphdb.DISCONNECT_SWEEP, { user: params.owner });
-    const sweptNames = swept.map((row) => row.name);
-    return `Deleted "${resolved.name}" (owner ${params.owner}) and its links${closeMatchNote(params.name, resolved.matched)}.`
-      + (sweptNames.length ? ` Also removed ${sweptNames.join(", ")}: the policy keeps only entities connected to the user.` : "");
-  }
+     const swept = await runWrite(graphdb.DISCONNECT_SWEEP, { user: params.owner });
+      const sweptNames = swept.map((row) => row.name);
+      return `Deleted "${resolved.name}" (owner ${params.owner}) and its links${closeMatchNote(params.name, resolved.matched)}.`
+        + (sweptNames.length ? ` Also removed ${sweptNames.join(", ")}: the policy keeps only entities connected to the user.` : "");
+    }
+
+    // The per-user Jarvis personality. The read is owner-pinned (the brain can
+    // only ever see the signed-in user's persona); the admin reads every
+    // owner's. The write is reached only after validateWriteTool accepted the
+    // call (owner + non-empty, capped text), so `params` is already canonical.
+    async function handleGetPersonality(user, admin) {
+      if (admin) return formatPersonalityAll(await run(QUERIES.getPersonalityAll));
+      const rows = await run(QUERIES.getPersonality, { user });
+      return formatPersonality(rows[0]);
+    }
+
+    async function handleSetPersonality(params) {
+      const now = new Date().toISOString();
+      const rows = await runWrite(QUERIES.setPersonality, { owner: params.owner, text: params.text, now });
+      return `Stored personality for ${params.owner}.`;
+    }
 
   const readLine = readline.createInterface({ input: process.stdin, terminal: false });
   readLine.on("line", (line) => {
@@ -700,9 +763,11 @@ function startServer() {
           if (name === "store-entity") text = await handleStoreEntity(check.params, users);
           else if (name === "store-fact") text = await handleStoreFact(check.params);
           else if (name === "rename-entity") text = await handleRenameEntity(check.params);
+          else if (name === "set-personality") text = await handleSetPersonality(check.params);
           else text = await handleDeleteEntity(check.params);
         }
         else if (name === "get-schema") text = await handleGetSchema();
+        else if (name === "get-personality") text = await handleGetPersonality(user, admin);
         else if (name === "get-entity") {
           const entityName = String(args.name || "").replace(/\s+/g, " ").trim().slice(0, 80);
           if (!entityName) return respond(id, { content: [{ type: "text", text: "name is required." }], isError: true });

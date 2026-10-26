@@ -639,6 +639,31 @@ test("memory store: per-user isolation — each user sees only their own world",
   assert.equal(centeredPizza.nodes.length, 3, "Pizza plus Roman's node and Mila's account marker");
 });
 
+test("memory store: the per-user Jarvis personality round-trips, isolates per owner and caps length", async () => {
+  const store = graphdb.createMemoryStore(["Mila", "Roman"]);
+  // No personality set yet -> null (the backend falls back to the default butler).
+  assert.equal((await store.readPersonality("Roman")).text, null, "unset personality is null");
+  // Round-trip: store and read back the user's chosen persona.
+  const wrote = await store.writePersonality({ user: "Roman", text: "  Antworte auf Deutsch und sprich mich immer mit du an. " });
+  assert.equal(wrote.text, "Antworte auf Deutsch und sprich mich immer mit du an.", "whitespace is normalised");
+  assert.ok(wrote.updatedAt, "the store stamps an updatedAt");
+  const read = await store.readPersonality("Roman");
+  assert.equal(read.text, "Antworte auf Deutsch und sprich mich immer mit du an.");
+  // Per-owner isolation: Mila's read is still null, Roman's is untouched.
+  assert.equal((await store.readPersonality("Mila")).text, null, "another user's personality does not leak");
+  // A second write replaces the previous text (one node per owner).
+  await store.writePersonality({ user: "Roman", text: "Answer in English, formally." });
+  assert.equal((await store.readPersonality("Roman")).text, "Answer in English, formally.");
+  // An empty/whitespace write is a no-op and returns the current state.
+  const noop = await store.writePersonality({ user: "Roman", text: "   " });
+  assert.equal(noop.text, "Answer in English, formally.", "empty write keeps the stored text");
+  // A runaway value is capped to PERSONALITY_MAX_LENGTH (it cannot blow the prompt).
+  const long = "x".repeat(graphdb.PERSONALITY_MAX_LENGTH + 500);
+  const capped = await store.writePersonality({ user: "Roman", text: long });
+  assert.equal(capped.text.length, graphdb.PERSONALITY_MAX_LENGTH, "overlong personality is capped");
+  assert.ok(capped.text.startsWith("x".repeat(100)));
+});
+
 test("memory store: the admin sees the whole graph (every user's nodes, owners and facts)", async () => {
   const store = graphdb.createMemoryStore(["Mila", "Roman", "admin"]);
   // Roman adds a private fact on top of the starter world. His first ingest
@@ -1507,7 +1532,7 @@ test("configured graph: status, schema, context, tool loop and ingestion", async
   // (no Cypher on the surface) and the user's stored context.
   assert.equal(toolRequests.length, 1);
   const names = graphToolNames(toolRequests[0].tools);
-  assert.deepEqual(names, ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "store-entity", "store-fact", "rename-entity", "delete-entity"]);
+  assert.deepEqual(names, ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality", "store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"]);
   const systemText = toolRequests[0].messages.map((message) => String(message.content || "")).join("\n");
   assert.match(systemText, /Knowledge graph context/);
   assert.match(systemText, /Known to this user so far:.*Rocky/);
@@ -1840,7 +1865,7 @@ test("graph write tools: regular users are self-scoped, admin can target any reg
   assert.equal(toolRequests.length, 1);
   assert.deepEqual(
     graphToolNames(toolRequests[0].tools),
-    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "store-entity", "store-fact", "rename-entity", "delete-entity"],
+    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality", "store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"],
   );
   // ...and the write call reached the MCP server with the backend-injected
   // session user, admin flag and registered user list (the mock logs the
@@ -1873,7 +1898,7 @@ test("graph write tools: regular users are self-scoped, admin can target any reg
   assert.equal(milaResponse.status, 200);
   assert.deepEqual(
     graphToolNames(toolRequests[0].tools),
-    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "store-entity", "store-fact", "rename-entity", "delete-entity"],
+    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality", "store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"],
   );
   const milaSchema = toolRequests[0].tools.find((tool) => tool.function.name === "store-fact").function.parameters;
   assert.ok(!milaSchema.properties.owner, "regular users are not offered an owner selector");
@@ -2002,7 +2027,7 @@ test("admin rename-entity: on the write surface, routed with the injected args, 
   assert.equal(response.status, 200);
   assert.deepEqual(
     graphToolNames(toolRequests[0].tools),
-    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "store-entity", "store-fact", "rename-entity", "delete-entity"],
+    ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality", "store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"],
   );
   // The rename call reached the MCP server with the backend-injected session
   // user, admin flag and registered user list.

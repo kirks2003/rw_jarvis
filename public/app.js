@@ -46,7 +46,7 @@ const el = Object.fromEntries([
   "costsPanel", "openrouterCostsSection", "openrouterCosts", "ovhcloudCostsSection", "ovhcloudCosts",
   "elevenlabsCostsSection", "elevenlabsCosts",
   "costsVoiceProviderSwitch", "costsProviderStatus",
-  "costsUpdated", "costsRefreshButton",
+  "costsUpdated", "costsRefreshButton", "costsSwitch",
 ].map((id) => [id, document.getElementById(id)]));
 const steps = ["wake", "record", "vad", "whisper", "brain", "tts"];
 const sessionId = crypto.randomUUID();
@@ -3294,6 +3294,13 @@ let costsNextAutoAt = null;
 let costsStatusOverride = "";
 const COSTS_REFRESH_MS = 60000;
 const costsEur = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
+// The cost panel is optional: the switch below Sign out shows or hides it (the
+// rest of the page moves up or down with it). The choice is saved per browser;
+// it defaults to ON (the pre-switch behaviour — the panel showed whenever a
+// provider was configured). The panel is visible only when the switch is on
+// AND at least one provider section is configured (renderCosts decides).
+const costsVisibleStorageKey = "jarvis.costsVisible";
+let costsVisible = true;
 
 function renderCostsUpdatedLabel() {
   if (costsStatusOverride) {
@@ -3333,7 +3340,7 @@ function renderCosts(value) {
   el.openrouterCostsSection.hidden = or.configured === false;
   el.ovhcloudCostsSection.hidden = ovh.configured === false;
   el.elevenlabsCostsSection.hidden = elv.configured === false;
-  el.costsPanel.hidden = el.openrouterCostsSection.hidden && el.ovhcloudCostsSection.hidden && el.elevenlabsCostsSection.hidden;
+  syncCostsPanelVisibility();
   if (or.configured !== false) {
     const rows = [
       ["Balance", or.balance === null || or.balance === undefined ? "—" : costsEur.format(or.balance)],
@@ -3421,6 +3428,32 @@ function startCostsPolling() {
 }
 
 el.costsRefreshButton.addEventListener("click", () => { loadCosts(true); });
+
+// Show/hide the cost panel. The panel is visible only when the switch is on
+// AND at least one provider section is configured (the section states are set
+// by renderCosts from the backend view). Hiding it collapses the hero's costs
+// grid row, so the rest of the page moves up — and back down when shown.
+// Polling is independent: it keeps running after sign-in (the backend caches
+// the billing view, so a hidden panel costs only the cached GET).
+function syncCostsPanelVisibility() {
+  const anyProvider =
+    !el.openrouterCostsSection.hidden ||
+    !el.ovhcloudCostsSection.hidden ||
+    !el.elevenlabsCostsSection.hidden;
+  el.costsPanel.hidden = !costsVisible || !anyProvider;
+}
+
+el.costsSwitch.addEventListener("click", () => {
+  if (el.costsSwitch.disabled) return;
+  costsVisible = !costsVisible;
+  el.costsSwitch.setAttribute("aria-checked", String(costsVisible));
+  try {
+    localStorage.setItem(costsVisibleStorageKey, String(costsVisible));
+  } catch (error) {
+    log("settings", "Could not save the cost-panel setting", { message: error.message });
+  }
+  syncCostsPanelVisibility();
+});
 
 async function loadConfig(userFromLogin) {
   stage("standby", "Loading", "Loading runtime configuration.");
@@ -3675,6 +3708,17 @@ async function loadConfig(userFromLogin) {
     el.armButton.disabled = el.sendManualButton.disabled = false;
     el.enableSwitch.disabled = false;
     for (const button of previewButtons) button.disabled = false;
+    // Restore the cost-panel switch (per browser, default ON) and hand the
+    // panel's visibility to it; the first costs fetch below then shows it if a
+    // provider is configured.
+    try {
+      costsVisible = localStorage.getItem(costsVisibleStorageKey) !== "false";
+    } catch (error) {
+      costsVisible = true;
+    }
+    el.costsSwitch.setAttribute("aria-checked", String(costsVisible));
+    el.costsSwitch.disabled = false;
+    syncCostsPanelVisibility();
     startCostsPolling();
     stage("standby", "Standby", "Arm Jarvis to start wake listening. Microphone audio stays local until a probe or command is sent.");
     log("build", "PCM lifecycle v3");

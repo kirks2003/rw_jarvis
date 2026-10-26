@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QUERIES, TOOLS, ADMIN_WRITE_TOOLS, factQuery, validateWriteTool, resolveEntityName, formatEntity, formatEntityAll, formatKnowledge, formatKnowledgeAll, formatFacts, formatFactsAll } from "../mcp/graph.mjs";
+import { QUERIES, TOOLS, ADMIN_WRITE_TOOLS, factQuery, validateWriteTool, resolveEntityName, formatEntity, formatEntityAll, formatKnowledge, formatKnowledgeAll, formatFacts, formatFactsAll, formatPersonality, formatPersonalityAll } from "../mcp/graph.mjs";
 
 // The MCP graph server is the brain's only window into the database. These
 // pins keep every query bounded by the signed-in user (owner = them): a
@@ -34,25 +34,55 @@ test("no query uses the nonexistent direction() Cypher function", () => {
   }
 });
 
-test("the MCP tool surface: four read tools plus four owner-scoped write/delete tools, never free-form Cypher", () => {
+test("the MCP tool surface: five read tools plus five owner-scoped write/delete tools, never free-form Cypher", () => {
   const names = TOOLS.map((tool) => tool.name);
   assert.deepEqual(
     [...names].sort(),
-    ["delete-entity", "get-entity", "get-schema", "list-my-facts", "list-my-knowledge", "rename-entity", "store-entity", "store-fact"],
+    ["delete-entity", "get-entity", "get-personality", "get-schema", "list-my-facts", "list-my-knowledge", "rename-entity", "set-personality", "store-entity", "store-fact"],
   );
   for (const name of names) {
     assert.doesNotMatch(name, /cypher/i, `no free-form query on the surface: ${name}`);
   }
-  assert.deepEqual([...ADMIN_WRITE_TOOLS].sort(), ["delete-entity", "rename-entity", "store-entity", "store-fact"]);
+  assert.deepEqual([...ADMIN_WRITE_TOOLS].sort(), ["delete-entity", "rename-entity", "set-personality", "store-entity", "store-fact"]);
   // The write tools' schema carries the owner the handler validates against
   // the injected user list — and exposes no admin/users parameter, so the
   // brain can never claim admin (only the backend's injection can).
-  for (const name of ["store-entity", "store-fact", "rename-entity", "delete-entity"]) {
+  for (const name of ["store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"]) {
     const tool = TOOLS.find((entry) => entry.name === name);
     assert.ok(tool.inputSchema.required.includes("owner"), `${name} requires an owner`);
     assert.ok(!("admin" in tool.inputSchema.properties), `${name} exposes no admin parameter`);
     assert.ok(!("users" in tool.inputSchema.properties), `${name} exposes no users parameter`);
   }
+});
+
+test("the personality queries pin the owner (read) and MERGE one :Personality node (write), never touching :Entity", () => {
+  assert.equal(QUERIES.getPersonality, "MATCH (p:Personality {owner: $user}) RETURN p.text AS text, p.updated_at AS updatedAt LIMIT 1");
+  assert.ok(QUERIES.getPersonalityAll.includes("MATCH (p:Personality)"), QUERIES.getPersonalityAll);
+  assert.ok(QUERIES.getPersonalityAll.includes("p.owner AS owner"), "the admin read reports each owner");
+  assert.doesNotMatch(QUERIES.getPersonalityAll, /owner: \$user/, "the admin read is not owner-pinned");
+  assert.equal(QUERIES.setPersonality, "MERGE (p:Personality {owner: $owner}) SET p.text = $text, p.updated_at = $now RETURN p.text AS text, p.updated_at AS updatedAt");
+  for (const cypher of [QUERIES.getPersonality, QUERIES.getPersonalityAll, QUERIES.setPersonality]) {
+    assert.doesNotMatch(cypher, /:Entity/, "personality storage is a separate label, not an entity");
+  }
+});
+
+test("formatPersonality renders the stored persona verbatim (and the unset state)", () => {
+  const set = formatPersonality({ text: "Antworte auf Deutsch und sprich mich mit du an.", updatedAt: "2026-10-26T00:00:00.000Z" });
+  assert.ok(set.includes("Antworte auf Deutsch und sprich mich mit du an."), set);
+  assert.ok(set.toLowerCase().includes("persona"), "it tells the brain to use it as the persona");
+  const unset = formatPersonality(null);
+  assert.ok(/no personality/i.test(unset), unset);
+  assert.ok(/set-personality/i.test(unset), "the unset state points at the tool that sets one");
+});
+
+test("formatPersonalityAll groups every owner's persona (and the empty state)", () => {
+  const all = formatPersonalityAll([
+    { owner: "Roman", text: "German, du.", updatedAt: null },
+    { owner: "Mila", text: "English, formal.", updatedAt: null },
+  ]);
+  assert.ok(all.includes("Roman: German, du."), all);
+  assert.ok(all.includes("Mila: English, formal."), all);
+  assert.ok(/no personalities/i.test(formatPersonalityAll([])), "empty state is explicit");
 });
 
 test("list-my-knowledge returns only the user's own entities", () => {
@@ -288,6 +318,17 @@ test("validateWriteTool: regular users can write only their own owner scope, adm
   assert.equal(validateWriteTool("store-entity", { ...admin, owner: "Mila" }, users).ok, false, "missing name");
   assert.equal(validateWriteTool("store-fact", { ...admin, owner: "Mila", from: "Mila" }, users).ok, false, "missing to");
   assert.equal(validateWriteTool("rename-entity", { ...admin, owner: "Mila", name: "Berlin" }, users).ok, false, "missing newName");
+  // set-personality: a user stores their OWN persona (owner omitted -> self);
+  // an admin can set any registered owner's. The text is normalised/capped.
+  const selfPersona = validateWriteTool("set-personality", { user: "Roman", users, text: "  German, du. " }, users);
+  assert.equal(selfPersona.ok, true, JSON.stringify(selfPersona));
+  assert.deepEqual(selfPersona.params, { owner: "Roman", text: "German, du." });
+  // A non-admin cannot set another user's personality.
+  assert.equal(validateWriteTool("set-personality", { user: "Mila", users, owner: "Roman", text: "German, du." }, users).ok, false, "non-admin cross-owner");
+  const adminPersona = validateWriteTool("set-personality", { ...admin, owner: "roman", text: "German, du." }, users);
+  assert.deepEqual(adminPersona.params, { owner: "Roman", text: "German, du." }, "admin sets any registered owner");
+  assert.equal(validateWriteTool("set-personality", { ...admin, owner: "Mila", text: "   " }, users).ok, false, "empty personality refused");
+  assert.equal(validateWriteTool("set-personality", { ...admin, owner: "Stranger", text: "x" }, users).ok, false, "unregistered owner");
 });
 
 test("resolveEntityName: exact first, then a unique close match, never short fragments", () => {

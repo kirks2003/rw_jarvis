@@ -608,6 +608,33 @@ test("finished chat turns with the graph toggle on are ingested into the knowled
   assert.ok(extraction.max_tokens >= 4096);
 });
 
+test("a stored Jarvis personality replaces the default butler persona in the system prompt", async (t) => {
+  // GRAPH_PERSONALITY_SEED is the test-only hook that writes Mila's persona
+  // into the in-memory graph at startup: the mock graph MCP does not share
+  // the in-process store, so a brain set-personality call would not reach it.
+  const graphBackend = await startBackend({
+    GRAPH_MEMORY: "1",
+    GRAPH_PERSONALITY_SEED: JSON.stringify({ Mila: "Antworte auf Deutsch und sprich mich immer mit du an." }),
+  });
+  t.after(async () => { graphBackend.process.kill(); await once(graphBackend.process, "exit"); });
+  const cookie = await login(graphBackend.origin, "Mila");
+  const chat = await auth(graphBackend.origin, "/api/chat", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "Hello.", sessionId: "persona", mcp: { graph: true } }),
+  }, cookie);
+  assert.equal(chat.status, 200);
+  assert.ok(lastBrain, "the brain request was captured");
+  const brainPrompt = lastBrain.messages[0].content;
+  // The stored persona leads the system message (it IS the persona)...
+  assert.match(brainPrompt, /Antworte auf Deutsch und sprich mich immer mit du an\./);
+  // ...so the deployment's default butler persona is no longer present.
+  assert.doesNotMatch(brainPrompt, /old-school English butler/);
+  // The usual identity scaffolding still follows the persona.
+  assert.match(brainPrompt, /Your name is/);
+  // The brain is also told it can manage the personality (graph on).
+  assert.match(brainPrompt, /set-personality/);
+});
+
 test("save/track instructions land as WATCHES facts and the brain is told the graph auto-saves", async (t) => {
   mode = "graph-ingest";
   t.after(() => { mode = "success"; });

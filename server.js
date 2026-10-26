@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-4").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-5").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -1815,6 +1815,22 @@ const graphStore = (() => {
   }
 })();
 
+// Test/demo seed: GRAPH_PERSONALITY_SEED is a JSON object mapping registered
+// users to personality text, written into the store at startup so the stored
+// persona -> system prompt substitution is verifiable end to end without a
+// live brain tool call (the mock graph MCP does not share the in-process
+// store). The memory store applies it synchronously; it is never set in
+// production.
+if (graphStore && process.env.GRAPH_PERSONALITY_SEED) {
+  try {
+    for (const [owner, text] of Object.entries(JSON.parse(process.env.GRAPH_PERSONALITY_SEED))) {
+      void graphStore.writePersonality({ user: owner, text });
+    }
+  } catch (error) {
+    console.log(JSON.stringify({ level: "warn", msg: "graph_personality_seed_failed", error: error.message }));
+  }
+}
+
 // Bounded ring of graph events (brain reads + ingested turns) for the panel's
 // activity list.
 const GRAPH_ACTIVITY_CAP = 50;
@@ -2456,6 +2472,11 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
   } else {
     mcpStates.push("Web search (MCP web-search server) is OFF in the user's browser for this request, so no web results are available. For questions that need live or current data (the weather now, news, prices, sports scores, today's events), say you cannot check it while web search is off and that the user can enable it with the MCP web search toggle in the UI to let you look it up. If the user asks about web search or MCP, say it is switched off and can be enabled with the MCP search toggle in the UI.");
   }
+  // The leading persona is the user's stored Jarvis personality when the
+  // knowledge graph is on and they have set one (per-user, in the graph);
+  // otherwise the deployment's default butler. It is read below, inside the
+  // graph-on branch, so a graph failure falls back to the default.
+  let systemPersona = config.brainSystemPrompt;
   let graphMessage = null;
   if (mcpFlags.graph) {
     if (graphStore) {
@@ -2463,6 +2484,14 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
         const context = await withAbort(graphStore.readContext(user), signal);
         const graphText = graphdb.formatGraphContext(context);
         if (graphText) graphMessage = { role: "system", content: graphText };
+        // The user's stored personality REPLACES the default butler persona for
+        // this request (it is their chosen way for the assistant to talk to
+        // them). Read over the same read client as the graph context.
+        const personality = await withAbort(graphStore.readPersonality(user), signal);
+        if (personality?.text) systemPersona = personality.text;
+        mcpStates.push(isAdmin(user)
+          ? "You can also manage each user's Jarvis personality: get-personality reads every user's stored personality (language, formality such as German 'du' vs formal 'Sie', tone, character) and set-personality(owner, text) stores one for any registered user — it becomes the persona the assistant uses for that user from their next request. When the admin asks you to set how the assistant should talk to a user, call set-personality with the full personality text and confirm exactly what you stored."
+          : "You can also manage this user's Jarvis personality: get-personality reads the stored personality (language, formality such as German 'du' vs formal 'Sie', tone, character) and set-personality(text) stores a new one — it becomes the persona you use for this user from their NEXT request. When the user tells you how they want you to address or talk to them (e.g. 'speak German with me and use du', 'always answer in English, formally'), call set-personality with the full personality text and confirm exactly what you stored; it then applies to every later conversation.");
         if (isAdmin(user)) {
           // The admin session is the one place allowed to see every user's
           // data: the tools run across all owners, so the privacy line above
@@ -2532,7 +2561,7 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
   // endpoints (OVH AI Endpoints) reject a second leading system message
   // with HTTP 400 "System message must be at the beginning."
   const leadingSystem = [
-    `${config.brainSystemPrompt}\nYour name is ${wakeName} — the user calls you by your wake word, so use "${wakeName}" as your own name in your answers, for example when they ask who you are or address you by name.\nThe user is signed in as ${user}; their signed-in name is their first name, so address them by it in your answers.\n${mcpStates.join("\n")}\nLanguage override: answer in ${answerLanguage}.\nCurrent server time: ${now.toISOString()} (${now.toString()}). If the user asks for the time or date, answer from this timestamp.\nMemory: the messages above are only the last few turns. Every earlier conversation with this user is stored and searchable with the search_history tool. If they refer to anything from before this session — what they asked, what you answered, a link or a decision — call search_history FIRST and answer from the hits with their dates. Never tell this user you have no conversation history or cannot look back: you can, through that tool. Only after a search comes back empty may you say you found nothing about it.\nAnswer directly; do not expose reasoning.`,
+    `${systemPersona}\nYour name is ${wakeName} — the user calls you by your wake word, so use "${wakeName}" as your own name in your answers, for example when they ask who you are or address you by name.\nThe user is signed in as ${user}; their signed-in name is their first name, so address them by it in your answers.\n${mcpStates.join("\n")}\nLanguage override: answer in ${answerLanguage}.\nCurrent server time: ${now.toISOString()} (${now.toString()}). If the user asks for the time or date, answer from this timestamp.\nMemory: the messages above are only the last few turns. Every earlier conversation with this user is stored and searchable with the search_history tool. If they refer to anything from before this session — what they asked, what you answered, a link or a decision — call search_history FIRST and answer from the hits with their dates. Never tell this user you have no conversation history or cannot look back: you can, through that tool. Only after a search comes back empty may you say you found nothing about it.\nAnswer directly; do not expose reasoning.`,
     searchMessage ? searchMessage.content : null,
     graphMessage ? graphMessage.content : null,
   ].filter(Boolean).join("\n\n");
@@ -2645,17 +2674,17 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
 // Five rounds: a schema call plus a few follow-ups is the common pattern.
 const GRAPH_TOOL_ROUNDS = 5;
 const GRAPH_TOOL_TIMEOUT_MS = 15000;
-const GRAPH_TOOL_NAMES = new Set(["get-schema", "get-entity", "list-my-knowledge", "list-my-facts"]);
+const GRAPH_TOOL_NAMES = new Set(["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality"]);
 // The write/delete surface — offered to EVERY session with graph tools;
 // non-admin calls are owner-scoped to the signed-in user by this backend and
 // re-validated in mcp/graph.mjs. Admin calls may target any registered owner.
-const GRAPH_WRITE_TOOL_NAMES = new Set(["store-entity", "store-fact", "rename-entity", "delete-entity"]);
+const GRAPH_WRITE_TOOL_NAMES = new Set(["store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"]);
 // The success prefixes of the MCP write results. The backend verifies a write
 // tool ACTUALLY changed something before the brain may claim it to the user:
 // a "No entity named …" answer is a non-error result, and unverified the brain
 // turns it into "Done, removed." (live incident 2026-10-10: three claimed
 // deletions, three entities still in the graph).
-const GRAPH_WRITE_SUCCESS_PREFIX = { "delete-entity": 'Deleted "', "store-entity": "Stored ", "store-fact": "Stored ", "rename-entity": 'Renamed "' };
+const GRAPH_WRITE_SUCCESS_PREFIX = { "delete-entity": 'Deleted "', "store-entity": "Stored ", "store-fact": "Stored ", "rename-entity": 'Renamed "', "set-personality": "Stored personality" };
 function graphTools(admin) {
   const tools = [
     {
@@ -2694,6 +2723,16 @@ function graphTools(admin) {
           ? "List every user's stored facts (likes, ownership, family, home, work, the questions they asked — ASKED_ABOUT, with the date — ...), optionally filtered to one entity (about) or one relation type (relation, e.g. LIKES)."
           : "List the facts stored about the signed-in user (likes, ownership, family, home, work, the questions they asked — ASKED_ABOUT, with the date and time of the question — ...), optionally filtered to one entity (about) or one relation type (relation, e.g. ASKED_ABOUT).",
         parameters: { type: "object", properties: { about: { type: "string", description: "Optional: only facts about this entity name." }, relation: { type: "string", description: "Optional: only this relation type, e.g. LIKES." } } },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get-personality",
+        description: admin
+          ? "Read every user's stored Jarvis personality (how the assistant is meant to talk to each of them: language, formality, tone, character)."
+          : "Read this signed-in user's stored Jarvis personality (how you are meant to talk to them: language, formality such as German 'du' vs formal 'Sie', tone and character). Returns the stored text, or a note that none is set yet.",
+        parameters: { type: "object", properties: {} },
       },
     },
   ];
@@ -2771,6 +2810,23 @@ function graphTools(admin) {
               name: { type: "string", description: "The entity name to delete, e.g. 'Berlin'." },
             },
             required: admin ? ["owner", "name"] : ["name"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "set-personality",
+          description: admin
+            ? "Store a user's desired Jarvis personality (admin only): owner (a registered user) and text (the free text describing how the assistant should talk to them — language, formality such as German 'du', tone, character). Takes effect from that user's next request."
+            : "Store this signed-in user's desired Jarvis personality: text (the free text describing how you should talk to them — language, formality such as German 'du' vs formal 'Sie', tone, character). Use it when the user tells you how they want you to address or talk to them; it takes effect from their next request. Confirm exactly what you stored.",
+          parameters: {
+            type: "object",
+            properties: {
+              ...(admin ? { owner: { type: "string", description: "The registered user the personality is stored for, e.g. 'Roman'." } } : {}),
+              text: { type: "string", description: "The personality text, e.g. 'Antworte auf Deutsch und sprich mich immer mit du an.'" },
+            },
+            required: admin ? ["owner", "text"] : ["text"],
           },
         },
       },
@@ -2963,6 +3019,7 @@ function graphToolDetail(name, args) {
   if (args.negative === true) parts.push("negative");
   if (args.about) parts.push(`about=${args.about}`);
   if (args.relation) parts.push(`relation=${String(args.relation).toUpperCase()}`);
+  if (args.text) parts.push(`text=${String(args.text).replace(/\s+/g, " ").trim().slice(0, 48)}`);
   return parts.length ? `${name}: ${parts.join(", ")}` : name;
 }
 
@@ -3166,7 +3223,7 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
         // The write/delete tools are offered to every session (owner-scoped
         // for regular users), so they belong in the hint for everyone.
         const available = [
-          ...(useTools ? ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "store-entity", "store-fact", "rename-entity", "delete-entity"] : []),
+          ...(useTools ? ["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality", "store-entity", "store-fact", "rename-entity", "delete-entity", "set-personality"] : []),
           ...(webToolsOn ? ["web_search", "web_news", "web_fetch"] : []),
           ...(vikunjaToolNames ? [...vikunjaToolNames] : []),
           ...externalLookup.keys(),

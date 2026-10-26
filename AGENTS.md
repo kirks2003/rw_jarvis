@@ -117,6 +117,18 @@ server clamps it to that range and uses it instead of the default, and the
 browser waits out the same budget client-side. Long MCP chains (e.g. a
 Kandev task) no longer end in a "signal timed out".
 
+**Per-user persona (2026-10-26):** the assistant's persona is no longer a
+single hardcoded butler. Each owner can store their own personality in the
+knowledge graph (one `:Personality` node per owner — free text, `updated_at`,
+capped at 2000 chars; a separate label so it never shows up in `:Entity`
+knowledge listings). With the graph toggle on, the user's stored persona
+**replaces** the default `BRAIN_SYSTEM_PROMPT` butler for their requests;
+graph off (or no persona stored) falls back to the butler. The brain manages
+it via the graph MCP's `get-personality` (read; all owners for admin) and
+`set-personality` (write; owner-scoped for regular sessions, any registered
+owner for admin) tools, so "speak German with me and use du" takes effect
+from the user's next request.
+
 ### 3.2 Whisper (speech-to-text)
 
 | Endpoint | Env prefix | Description |
@@ -286,10 +298,24 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-4`
+- Latest: `2026.10.26-5`
 
 ### 7.1 Release notes
 
+- **`2026.10.26-5` (this repo):** two features. (1) The endpoint panel's
+  cost section gained an on/off **switch** (top-right, below Sign out, saved
+  per browser): off hides the cost panel and the page reflows; polling and
+  the backend billing cache keep running regardless. (2) The assistant
+  persona is now **per-user and stored in the knowledge graph** instead of a
+  single hardcoded butler: one `:Personality` node per owner (free text +
+  `updated_at`, capped at 2000 chars), separate from `:Entity` so it never
+  pollutes knowledge listings. With the graph toggle on, a user's stored
+  persona REPLACES the default `BRAIN_SYSTEM_PROMPT` butler for that user's
+  requests; the brain manages it through new `get-personality` (read) and
+  `set-personality` (write, owner-scoped for regular sessions, any registered
+  owner for admin) MCP tools, so the user can say "speak German with me and
+  use du" and it takes effect from their next request. Rolled out to all
+  three hosts 2026-10-26.
 - **`2026.10.26-4` (this repo):** the braille thinking spinner now
   always animates (the `prefers-reduced-motion` freeze was dropped — the
   glyph swap carries no spatial motion), and the endpoint panel gained a
@@ -391,6 +417,13 @@ transcription + real brain cycles).
   (key names documented in `.env.example`)
 - GitHub tokens for `rw_jarvis` / `rwnix-infra` pushes use one-shot PAT
   URLs — never stored in any repo
+- The kirks2003 GitHub PAT used to push/merge to `main` lives in the
+  gitignored hidden file `.git-credentials` at this kandev workspace's repo
+  root (mode 600, `git credential store` format: `https://<user>:<token>@github.com`).
+  It is local to this workdir, never committed and never printed. Agents use
+  it with `git -c credential.useHttpPath=false -c credential.helper=
+  -c credential.helper="store --file=$PWD/.git-credentials" push origin main`
+  (see §11).
 
 ---
 
@@ -400,6 +433,11 @@ transcription + real brain cycles).
 - Check `git status` and `git log --oneline -5` before making changes
 - Do not commit unless explicitly asked
 - Use conventional commit message format
+- **Pushing/merging to `main`:** use the kirks2003 PAT in the gitignored
+  `.git-credentials` at this workspace's repo root (see §10) —
+  `git -c credential.useHttpPath=false -c credential.helper=
+  -c credential.helper="store --file=$PWD/.git-credentials" push origin main`.
+  Never print the token, and never commit `.git-credentials`.
 - Keep the Markdown Index at the bottom of this file: for every new or updated
   `.md` file, add or update its index entry
 - All secrets and credentials must stay in host-local `.env` files — never in

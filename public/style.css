@@ -147,6 +147,15 @@ body:not(.authenticated) .app-ui {
   color: var(--text);
 }
 
+/* The cost on/off switch: right-aligned, a row below the Sign out button (the
+   top-right corner of the hero). It only ever holds the compact switch, so the
+   column stays narrow and the hero's top-right corner reads cleanly. */
+.costs-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
 .hero, .controls, .transcript {
   display: grid;
   gap: 18px;
