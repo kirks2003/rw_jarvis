@@ -1,0 +1,404 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { voiceProfiles, normalizeVoiceId, normalizeVoiceSpeed, scaledRate, splitForSpeech, pickSynthesisVoice, pickGermanSynthesisVoice, NeuralVoice, textForSpeech, isStopCommand, stopCommandIn, isPostSpeechStop, STOP_COMMANDS, acknowledgmentKind, acknowledgmentIn, pickClosing, CLOSING_LINES } from "../public/voice.js";
+
+test("answers are split into speakable clauses without losing text", () => {
+  assert.deepEqual(splitForSpeech("It is 14:05. Shall I continue?"), ["It is 14:05.", "Shall I continue?"]);
+  assert.deepEqual(splitForSpeech("  Yes.\n I can do that. "), ["Yes. I can do that."]);
+  assert.deepEqual(splitForSpeech(""), []);
+  assert.deepEqual(splitForSpeech("   "), []);
+  const long = `${"word ".repeat(40)}end, ${"tail ".repeat(20)}stop.`;
+  const chunks = splitForSpeech(long, 120);
+  assert.ok(chunks.every((chunk) => chunk.length <= 120), JSON.stringify(chunks));
+  assert.equal(chunks.join(" ").replace(/\s+/g, " "), long.replace(/\s+/g, " ").trim());
+});
+
+test("only known voice profiles are accepted", () => {
+  assert.equal(normalizeVoiceId("hal9000"), "hal9000");
+  assert.equal(normalizeVoiceId(" browser "), "browser");
+  for (const invalid of ["", null, "HAL9000", "constructor", "__proto__", "toString"]) {
+    assert.throws(() => normalizeVoiceId(invalid), /Unknown voice/);
+  }
+  assert.ok(voiceProfiles.hal9000.neural);
+  assert.equal(voiceProfiles.browser.neural, false);
+});
+
+test("German mode picks a male German voice and never an English one", () => {
+  const voices = [
+    { name: "Google US English", lang: "en-US" },
+    { name: "Google Deutsch", lang: "de-DE" },
+    { name: "Microsoft Conrad - German (Germany)", lang: "de-DE" },
+  ];
+  assert.equal(pickGermanSynthesisVoice(voices).name, "Microsoft Conrad - German (Germany)");
+  assert.equal(pickGermanSynthesisVoice([voices[1], voices[0]]).name, "Google Deutsch");
+  assert.equal(pickGermanSynthesisVoice([voices[0]]), null);
+});
+
+test("character profiles are neural and keep distinct delivery", () => {
+  for (const id of ["commander", "android", "wizard", "newscaster"]) {
+    assert.equal(voiceProfiles[id].neural, true, id);
+    assert.ok(voiceProfiles[id].speed > 0 && voiceProfiles[id].chunkChars > 0, id);
+    assert.ok(voiceProfiles[id].voiceHints.length > 0, id);
+  }
+  // Distinct paces keep the characters audible apart even on the browser fallback.
+  assert.notEqual(voiceProfiles.commander.speed, voiceProfiles.newscaster.speed);
+  assert.notEqual(voiceProfiles.commander.pitch, voiceProfiles.newscaster.pitch);
+});
+
+test("the HAL profile prefers a deep English voice over a default female one", () => {
+  const voices = [
+    { name: "Microsoft Zira - English (United States)", lang: "en-US" },
+    { name: "Google Deutsch", lang: "de-DE" },
+    { name: "Daniel", lang: "en-GB" },
+  ];
+  assert.equal(pickSynthesisVoice(voices, voiceProfiles.hal9000).name, "Daniel");
+  assert.equal(pickSynthesisVoice(voices.slice(0, 2), voiceProfiles.hal9000), null);
+  assert.equal(pickSynthesisVoice(voices, voiceProfiles.browser), null);
+});
+
+test("named male and female profiles exist with matching Kokoro voices", () => {
+  for (const [id, gender, ttsVoice] of [
+    ["heart", "female", "af_heart"], ["bella", "female", "af_bella"],
+    ["nicole", "female", "af_nicole"], ["sarah", "female", "af_sarah"],
+    ["adam", "male", "am_adam"], ["eric", "male", "am_eric"], ["liam", "male", "am_liam"],
+  ]) {
+    assert.equal(voiceProfiles[id].gender, gender, id);
+    assert.equal(voiceProfiles[id].ttsVoice, ttsVoice, id);
+    assert.equal(voiceProfiles[id].neural, true, id);
+    assert.ok(voiceProfiles[id].voiceHints.length > 0, id);
+    assert.equal(voiceProfiles[id].group, gender, id);
+  }
+});
+
+test("female profiles pick a female browser voice, male profiles a male one", () => {
+  const voices = [
+    { name: "Microsoft George - English (United States)", lang: "en-US" },
+    { name: "Microsoft Zira - English (United States)", lang: "en-US" },
+  ];
+  assert.equal(pickSynthesisVoice(voices, voiceProfiles.heart).name, "Microsoft Zira - English (United States)");
+  assert.equal(pickSynthesisVoice(voices, voiceProfiles.adam).name, "Microsoft George - English (United States)");
+  // With only a voice of the wrong gender available, no hint-matched fallback wins.
+  assert.equal(pickSynthesisVoice([voices[0]], voiceProfiles.nicole), null);
+  assert.equal(pickSynthesisVoice([voices[1]], voiceProfiles.eric), null);
+});
+
+test("German mode picks a female German voice for female profiles", () => {
+  const voices = [
+    { name: "Google US English", lang: "en-US" },
+    { name: "Microsoft Conrad - German (Germany)", lang: "de-DE" },
+    { name: "Microsoft Katrin - German (Germany)", lang: "de-DE" },
+  ];
+  assert.equal(pickGermanSynthesisVoice(voices, "female").name, "Microsoft Katrin - German (Germany)");
+  assert.equal(pickGermanSynthesisVoice(voices, "male").name, "Microsoft Conrad - German (Germany)");
+  assert.equal(pickGermanSynthesisVoice(voices).name, "Microsoft Conrad - German (Germany)");
+});
+
+test("the speed slider is clamped and applied as a multiplier", () => {
+  assert.equal(normalizeVoiceSpeed("1.25"), 1.25);
+  assert.equal(normalizeVoiceSpeed(9), 1.6);
+  assert.equal(normalizeVoiceSpeed(0.1), 0.6);
+  for (const invalid of ["", null, "fast", NaN]) assert.equal(normalizeVoiceSpeed(invalid), 1);
+  // 1.00x must leave the profile exactly as designed.
+  assert.equal(scaledRate(voiceProfiles.hal9000.speed, 1), voiceProfiles.hal9000.speed);
+  assert.equal(scaledRate(1.04, 1.5), 1.56);
+  // Stays inside what /api/speak and SpeechSynthesisUtterance accept.
+  assert.equal(scaledRate(1.6, 1.6), 2);
+  assert.equal(scaledRate(0.6, 0.6), 0.5);
+});
+
+// Chromium covers actual playback (tests/pipeline.browser.mjs). These stubs cover the
+// request/playback sequencing: prefetching, stop and partial-failure handover.
+function installWebAudioStubs(played) {
+  class Node {
+    connect(target) { return target; }
+    disconnect() {}
+  }
+  globalThis.BiquadFilterNode = Node;
+  globalThis.DynamicsCompressorNode = Node;
+  globalThis.ConvolverNode = Node;
+  globalThis.GainNode = Node;
+  globalThis.AnalyserNode = Node;
+  globalThis.AudioBufferSourceNode = class extends Node {
+    constructor(context, { buffer }) { super(); this.buffer = buffer; }
+    start() {
+      played.push(this.buffer);
+      this.timer = setTimeout(() => this.onended?.(), 10);
+    }
+    stop() { clearTimeout(this.timer); }
+  };
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.state = "running"; this.destination = new Node(); }
+    createBuffer() { return { getChannelData: () => new Float32Array(16) }; }
+    async resume() {}
+    async close() { this.state = "closed"; }
+    async decodeAudioData(audio) { return new TextDecoder().decode(audio); }
+  };
+}
+
+function stubSpeakFetch(responses) {
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body.text);
+    const status = responses(requests.length);
+    return {
+      ok: status === 200,
+      status,
+      arrayBuffer: async () => new TextEncoder().encode(status === 200 ? `audio:${body.text}` : "engine down"),
+    };
+  };
+  return requests;
+}
+
+test("HAL playback speaks every clause in order and prefetches the next one", async () => {
+  const played = [];
+  installWebAudioStubs(played);
+  const requests = stubSpeakFetch(() => 200);
+  const speeds = [];
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (url, options) => { speeds.push(JSON.parse(options.body).speed); return fetchOriginal(url, options); };
+  const voice = new NeuralVoice(new AbortController().signal, voiceProfiles.hal9000);
+  const spoken = [];
+  await voice.speak("It is 14:05. I am completely operational. Shall I continue?", {
+    speed: 1.3,
+    onChunk: (chunk, index, total) => spoken.push(`${index + 1}/${total} ${chunk}`),
+  });
+  assert.deepEqual(requests, ["It is 14:05.", "I am completely operational.", "Shall I continue?"]);
+  assert.deepEqual(played, requests.map((text) => `audio:${text}`));
+  assert.deepEqual(spoken, [
+    "1/3 It is 14:05.", "2/3 I am completely operational.", "3/3 Shall I continue?",
+  ]);
+  assert.deepEqual(speeds, [1.3, 1.3, 1.3], "every clause carries the requested speed");
+});
+
+test("a failing clause surfaces the unspoken remainder for the browser voice", async () => {
+  const played = [];
+  installWebAudioStubs(played);
+  const requests = stubSpeakFetch((n) => (n === 1 ? 200 : 502));
+  const voice = new NeuralVoice(new AbortController().signal, voiceProfiles.hal9000);
+  await assert.rejects(
+    voice.speak("It is 14:05. I am completely operational. Shall I continue?"),
+    (error) => {
+      assert.equal(error.name, "VoiceError");
+      assert.match(error.message, /502/);
+      assert.deepEqual(error.remaining, ["I am completely operational.", "Shall I continue?"]);
+      return true;
+    });
+  assert.deepEqual(played, ["audio:It is 14:05."]);
+  assert.equal(requests.length, 2);
+});
+
+test("Stop ends HAL playback and releases its audio context", async () => {
+  const played = [];
+  installWebAudioStubs(played);
+  stubSpeakFetch(() => 200);
+  const controller = new AbortController();
+  const voice = new NeuralVoice(controller.signal, voiceProfiles.hal9000);
+  const speaking = voice.speak("It is 14:05. I am completely operational.");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  controller.abort(new DOMException("Session stopped", "AbortError"));
+  await assert.rejects(speaking, { name: "AbortError" });
+  assert.equal(played.length, 1);
+  assert.equal(voice.context.state, "closed");
+});
+
+test("voice commands that cut spoken answers are recognized, everything else is a follow-up", () => {
+  for (const command of STOP_COMMANDS) assert.equal(isStopCommand(command), true, command);
+  assert.equal(isStopCommand("  STOP. "), true);
+  assert.equal(isStopCommand("Stopp!"), true);
+  assert.equal(isStopCommand("Das reicht."), true);
+  for (const command of ["", null, "hello", "what time is it?", "stop the car", "genug ist genug", "stop it now"]) {
+    assert.equal(isStopCommand(command), false, JSON.stringify(command));
+  }
+});
+
+test("a stop command right after the spoken answer stays out of the brain", () => {
+  assert.equal(isPostSpeechStop("stop", 1000, 9999, 10000), true, "inside the window");
+  assert.equal(isPostSpeechStop("  STOP. ", 1000, 5000, 10000), true, "punctuation");
+  assert.equal(isPostSpeechStop("stop", 1000, 11000, 10000), false, "outside the window");
+  assert.equal(isPostSpeechStop("stop", 0, 5000, 10000), false, "no speech has ended");
+  assert.equal(isPostSpeechStop("what time is it?", 1000, 5000, 10000), false, "not a stop command");
+});
+
+test("the stop word is found inside an echoed transcript, not inside longer words", () => {
+  assert.equal(stopCommandIn("Stopp."), "stopp");
+  assert.equal(stopCommandIn("Der Regen bleibt bis morgen. Stopp"), "stopp");
+  assert.equal(stopCommandIn("Hör auf bitte!"), "hör auf");
+  assert.equal(stopCommandIn("Lass das, danke."), "lass das");
+  assert.equal(stopCommandIn("Das reicht, danke"), "das reicht");
+  // Word boundaries: the stop word must stand alone, not inside another word.
+  assert.equal(stopCommandIn("Die Stoppuhr läuft weiter"), null);
+  assert.equal(stopCommandIn("Halten Sie die Tür"), null);
+  assert.equal(stopCommandIn("genugsam ist genug"), "genug");
+  assert.equal(stopCommandIn(""), null);
+  assert.equal(stopCommandIn(null), null);
+});
+
+test("trailing stop words are only accepted at the very end of the text", () => {
+  assert.equal(stopCommandIn("Der Regen bleibt bis morgen. Stopp", { trailing: true }), "stopp");
+  assert.equal(stopCommandIn("Stopp", { trailing: true }), "stopp");
+  assert.equal(stopCommandIn("Genug, was ist das Wetter?", { trailing: true }), null);
+  assert.equal(stopCommandIn("Genug", { trailing: true }), "genug");
+});
+
+test("an echoed stop right after the spoken answer needs a user burst in the window", () => {
+  assert.equal(isPostSpeechStop("Regen bis morgen. Stopp", 1000, 9999, 10000), false, "pure echo cannot self-trigger");
+  assert.equal(isPostSpeechStop("Regen bis morgen. Stopp", 1000, 9999, 10000, { userBurst: true }), true, "user burst unlocks the match");
+  assert.equal(isPostSpeechStop("Genug, was ist das Wetter?", 1000, 9999, 10000, { userBurst: true }), false, "the stop word must end the utterance");
+  assert.equal(isPostSpeechStop("Regen bis morgen. Stopp", 1000, 11000, 10000, { userBurst: true }), false, "outside the window");
+});
+
+test("the speaker gets plain language without markdown or special signs", () => {
+  assert.equal(textForSpeech("It is **14:05**."), "It is 14:05.");
+  assert.equal(textForSpeech("Use `npm test` and [the docs](https://example.com/docs)"), "Use npm test and the docs");
+  assert.equal(textForSpeech("- first\n- second"), "first second");
+  assert.equal(textForSpeech("1. one\n2. two"), "one two");
+  assert.equal(textForSpeech("See https://example.com/path for details"), "See for details");
+  assert.equal(textForSpeech("# Heading\nBody text"), "Heading Body text");
+  assert.equal(textForSpeech("50% done, right? — Yes!"), "50% done, right? — Yes!");
+  assert.equal(textForSpeech("café, Straße, naïve"), "café, Straße, naïve");
+  assert.equal(textForSpeech("```\ncode block\n```"), "");
+  assert.equal(textForSpeech("a * b | c > d"), "a b c d");
+  assert.equal(textForSpeech(""), "");
+  assert.equal(textForSpeech(null), "");
+});
+
+test("whole-utterance acknowledgments are recognized, real commands are not", () => {
+  assert.equal(acknowledgmentKind("ok"), "general");
+  assert.equal(acknowledgmentKind("OK."), "general");
+  assert.equal(acknowledgmentKind("okay?!"), "general");
+  assert.equal(acknowledgmentKind("Thank you"), "thanks");
+  assert.equal(acknowledgmentKind("thank you very much."), "thanks");
+  assert.equal(acknowledgmentKind("Danke schön"), "thanks");
+  assert.equal(acknowledgmentKind("danke!"), "thanks");
+  assert.equal(acknowledgmentKind("great"), "general");
+  assert.equal(acknowledgmentKind("Sehr gut"), "general");
+  // A real command is never an acknowledgment, even when it starts with one.
+  assert.equal(acknowledgmentKind("ok, and now check the weather"), null);
+  assert.equal(acknowledgmentKind("thank you, then set a timer"), null);
+  assert.equal(acknowledgmentKind("what is the time"), null);
+  assert.equal(acknowledgmentKind("stop"), null, "stops are handled by the stop path");
+  assert.equal(acknowledgmentKind(""), null);
+  assert.equal(acknowledgmentKind("   "), null);
+  assert.equal(acknowledgmentKind(null), null);
+  // Informal thanks count as thanks, so "thx" after a question gets the
+  // butler's "it was my pleasure" closing, not a brain round trip.
+  assert.equal(acknowledgmentKind("thx"), "thanks");
+  assert.equal(acknowledgmentKind("THX."), "thanks");
+  assert.equal(acknowledgmentKind("tks"), "thanks");
+  assert.equal(acknowledgmentKind("ty"), "thanks");
+  assert.equal(acknowledgmentKind("thank u"), "thanks");
+  assert.equal(acknowledgmentKind("thx jarvis"), "thanks");
+  assert.equal(acknowledgmentKind("danke jarvis"), "thanks");
+  assert.equal(acknowledgmentKind("thx, and now check the weather"), null, "a follow-up is still a command");
+  // Session-ending words and sentences are farewells, not general acks.
+  assert.equal(acknowledgmentKind("bye"), "farewell");
+  assert.equal(acknowledgmentKind("Goodbye."), "farewell");
+  assert.equal(acknowledgmentKind("see you later"), "farewell");
+  assert.equal(acknowledgmentKind("that's all"), "farewell");
+  assert.equal(acknowledgmentKind("that's it"), "farewell");
+  assert.equal(acknowledgmentKind("never mind"), "farewell");
+  assert.equal(acknowledgmentKind("Tschüss"), "farewell");
+  assert.equal(acknowledgmentKind("Auf Wiedersehen."), "farewell");
+  assert.equal(acknowledgmentKind("bis später"), "farewell");
+  assert.equal(acknowledgmentKind("bye, and now check the weather"), null);
+});
+
+test("a trailing acknowledgment inside an echoed transcript is recognized, commands are not", () => {
+  // The speaker's echo puts the answer's own last words in front of the
+  // user's "ok" / "thank you"; only the last phrase may be the
+  // acknowledgment (the caller gates this with a loud user burst).
+  assert.equal(acknowledgmentIn("Ok"), "general");
+  assert.equal(acknowledgmentIn("Thank you."), "thanks");
+  assert.equal(acknowledgmentIn("Done. Ok.", { trailing: true }), "general");
+  assert.equal(acknowledgmentIn("It is 12:00. Thank you.", { trailing: true }), "thanks");
+  assert.equal(acknowledgmentIn("It is 12:00. thx.", { trailing: true }), "thanks");
+  assert.equal(acknowledgmentIn("Es ist 12 Uhr. Danke.", { trailing: true }), "thanks");
+  assert.equal(acknowledgmentIn("Wetter ist schön. Gut.", { trailing: true }), "general");
+  assert.equal(acknowledgmentIn("It is 12:00. Bye.", { trailing: true }), "farewell");
+  assert.equal(acknowledgmentIn("Es ist 12 Uhr. Tschüss.", { trailing: true }), "farewell");
+  // Without trailing the echoed transcript is a real (merged) command, not
+  // an acknowledgment.
+  assert.equal(acknowledgmentIn("Done. Ok."), null);
+  // The acknowledgment in the middle of a command is never a trailing match.
+  assert.equal(acknowledgmentIn("ok, and now check the weather", { trailing: true }), null);
+  assert.equal(acknowledgmentIn("thank you, then set a timer", { trailing: true }), null);
+  assert.equal(acknowledgmentIn("what is the time", { trailing: true }), null);
+  assert.equal(acknowledgmentIn("", { trailing: true }), null);
+});
+
+test("the butler closing matches the language and kind and stays in its list", () => {
+  // Deterministic: a fixed random source picks the first line of each list.
+  assert.equal(pickClosing("en", "thanks", () => 0), CLOSING_LINES.en.thanks[0]);
+  assert.equal(pickClosing("en", "farewell", () => 0), CLOSING_LINES.en.farewell[0]);
+  assert.equal(pickClosing("en", "general", () => 0), CLOSING_LINES.en.general[0]);
+  assert.equal(pickClosing("de", "thanks", () => 0), CLOSING_LINES.de.thanks[0]);
+  assert.equal(pickClosing("de", "farewell", () => 0), CLOSING_LINES.de.farewell[0]);
+  assert.equal(pickClosing("de", "general", () => 0), CLOSING_LINES.de.general[0]);
+  // The farewell closing actually ends the session, not just the turn.
+  for (const line of CLOSING_LINES.en.farewell) assert.match(line, /goodbye\.?$/i);
+  for (const line of CLOSING_LINES.de.farewell) assert.match(line, /auf wiedersehen\.?$/i);
+  // Unknown languages fall back to English.
+  assert.ok(CLOSING_LINES.en.thanks.includes(pickClosing("fr", "thanks", () => 0)));
+  // The full range of the random source stays inside the list.
+  for (const value of [0, 0.49, 0.5, 0.99, 0.999999]) {
+    assert.ok(CLOSING_LINES.en.general.includes(pickClosing("en", "general", () => value)));
+    assert.ok(CLOSING_LINES.de.thanks.includes(pickClosing("de", "thanks", () => value)));
+  }
+  // Every closing is speakable plain language in its own language's script.
+  for (const lines of Object.values(CLOSING_LINES)) {
+    for (const kind of Object.values(lines)) {
+      for (const line of kind) {
+        assert.ok(line.length > 5, "closing is a full sentence");
+        assert.ok(!line.includes("*") && !line.includes("`"), "no markdown in closings");
+      }
+    }
+  }
+});
+
+test("hal9000 runs the softened mainframe chain, the other neural profiles keep the full one", () => {
+  const recorded = [];
+  const rec = (kind) => class {
+    constructor(context, options) { recorded.push({ kind, options }); }
+    connect(target) { return target; }
+    disconnect() {}
+  };
+  globalThis.BiquadFilterNode = rec("biquad");
+  globalThis.DynamicsCompressorNode = rec("compressor");
+  globalThis.ConvolverNode = rec("convolver");
+  globalThis.GainNode = rec("gain");
+  globalThis.AnalyserNode = rec("analyser");
+  globalThis.AudioBufferSourceNode = rec("source");
+  const dest = rec("dest");
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.state = "running"; this.destination = new dest(); }
+    createBuffer() { return { getChannelData: () => new Float32Array(16) }; }
+    async resume() {}
+    async close() { this.state = "closed"; }
+  };
+  const chainOf = (profile) => {
+    const before = recorded.length;
+    const voice = new NeuralVoice(new AbortController().signal, profile);
+    voice.close();
+    return recorded.slice(before);
+  };
+  const biquads = (chain) => chain.filter((node) => node.kind === "biquad").map((node) => node.options);
+  const compressor = (chain) => chain.find((node) => node.kind === "compressor").options;
+  const gains = (chain) => chain.filter((node) => node.kind === "gain").map((node) => node.options.gain);
+  const hal = chainOf(voiceProfiles.hal9000);
+  const commander = chainOf(voiceProfiles.commander);
+  // hal9000 keeps the chain shape (4 biquads, compressor, convolver, wet/dry)
+  // at the owner-requested softened intensity.
+  assert.deepEqual(biquads(hal).map((o) => o.frequency), [80, 5200, 220, 1800]);
+  assert.equal(biquads(hal)[2].gain, 2.5, "chest boost softened");
+  assert.equal(biquads(hal)[3].gain, -1.5, "presence dip softened");
+  assert.equal(compressor(hal).ratio, 4);
+  assert.equal(compressor(hal).knee, 16);
+  assert.deepEqual(gains(hal), [0.1, 0.9, 1], "shorter, drier room tail (wet, dry, output)");
+  // The other neural profiles keep the full 1960s-speaker shaping.
+  assert.deepEqual(biquads(commander).map((o) => o.frequency), [95, 3800, 220, 1800]);
+  assert.equal(biquads(commander)[2].gain, 4.5);
+  assert.equal(biquads(commander)[3].gain, -2.5);
+  assert.equal(compressor(commander).ratio, 7);
+  assert.deepEqual(gains(commander), [0.16, 0.9, 1], "full chain (wet, dry, output)");
+});

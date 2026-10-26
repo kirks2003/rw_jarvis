@@ -1,0 +1,5 @@
+node_modules/
+test-results/
+# Host-local secrets never enter the repo (see AGENTS.md, section 10).
+.env
+*.env

@@ -1,0 +1,3649 @@
+import { Microphone, abortError, delay, wakeCommand, normalizeWakePhrase, hasLoudBurst, heldVoiceAfterEcho } from "./audio.js";
+import { voiceProfiles, normalizeVoiceId, normalizeVoiceSpeed, scaledRate, splitForSpeech,
+  pickSynthesisVoice, pickGermanSynthesisVoice, voiceSpeedRange, NeuralVoice, VoiceError,
+  textForSpeech, isStopCommand, stopCommandIn, isPostSpeechStop,
+  acknowledgmentKind, acknowledgmentIn, pickClosing, thinkingPhrase } from "./voice.js";
+import { CoreVisualizer } from "./visualizer.js";
+import { createGraph3D } from "./graph3d.js";
+import { renderGraph2d } from "./graph2d.js";
+import { renderMarkdown } from "./markdown.js";
+
+const el = Object.fromEntries([
+  "core", "waveform", "levelReadout", "stageTitle", "stageDetail", "appReleaseVersion", "armButton", "stopButton",
+  "clearLogButton", "micLevel", "micLevelValue", "silenceLevel", "silenceValue",
+  "silenceDelay", "silenceDelayValue", "silenceDelayStatus",
+  "commandWait", "commandWaitValue", "commandWaitStatus",
+  "conversationText",
+  "historyDays", "historyDaysValue", "historyDaysStatus",
+  "log", "steps", "pipelineStatus", "pipelineMini",
+  "manualPromptForm", "manualPrompt", "sendManualButton",
+  "wakeWordForm", "wakeWordInput", "saveWakeWordButton", "wakeWordStatus",
+  "voiceForm", "voiceSelect", "saveVoiceButton", "voiceStatus", "voiceSpeed", "voiceSpeedValue",
+  "voiceProviderSwitch", "voiceProviderStatus",
+  "languageSwitch", "languageStatus", "mcpMasterSwitch", "mcpMasterStatus",
+  "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
+  "mcpSwitches",
+  "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
+  "speakSwitch", "speakStatus",
+  "graphPanel", "graphStatus", "graphRefreshButton", "graphRemoveButton", "graphCanvas", "graph3dStage",
+  "graphView2dButton", "graphView3dButton", "graphRelevance", "graphSchema", "graphActivity",
+  "graphEdgeBrightness", "graphEdgeBrightnessValue", "graphEntityLimit", "graphEntityLimitValue", "graphNodeSize", "graphNodeSizeValue", "graphTextSize", "graphTextSizeValue",
+  "appearanceFontScale", "appearanceFontScaleValue", "appearanceFontFamily",
+  "appearanceTextColor", "appearanceMutedColor", "appearanceAccentColor",
+  "appearancePanelColor", "appearancePanelOpacity", "appearancePanelOpacityValue",
+  "appearanceResetButton", "appearanceStatus",
+  "panelsToggle", "panelsBelow",
+  "historySearchPanel", "historySearchReset", "historySearchStatus", "historySearchEngine",
+  "historySearchDays", "historySearchDaysValue",
+  "historySearchResults", "historySearchResultsValue",
+  "historySearchSnippet", "historySearchSnippetValue",
+  "historySearchMemory", "historySearchMemoryValue",
+  "historySearchMinScore", "historySearchMinScoreValue",
+  "historySearchStrongScore", "historySearchStrongScoreValue",
+  "loginPanel", "loginForm", "loginUsername", "loginPassword", "loginButton", "loginStatus",
+  "userLine", "enableSwitch", "signOutButton",
+  "costsPanel", "openrouterCostsSection", "openrouterCosts", "ovhcloudCostsSection", "ovhcloudCosts",
+  "elevenlabsCostsSection", "elevenlabsCosts",
+  "costsVoiceProviderSwitch", "costsProviderStatus",
+  "costsUpdated", "costsRefreshButton",
+].map((id) => [id, document.getElementById(id)]));
+const steps = ["wake", "record", "vad", "whisper", "brain", "tts"];
+const sessionId = crypto.randomUUID();
+const wakeWordStorageKey = "jarvis.wakePhrase";
+const voiceStorageKey = "jarvis.voice";
+const voiceSpeedStorageKey = "jarvis.voiceSpeed";
+const voiceProviderStorageKey = "jarvis.voiceProvider";
+const elevenVoiceStorageKey = "jarvis.elevenVoiceId";
+const languageStorageKey = "jarvis.language";
+const speakEnabledStorageKey = "jarvis.speakEnabled";
+const panelsStorageKey = "jarvis.panelsVisible";
+const graphSizesStorageKey = "jarvis.graphSizes";
+const legacyGraphSizesStorageKey = "jarvis.graphSizes.main";
+const graphRelevanceStorageKey = "jarvis.graphRelevance";
+const appearanceStorageKey = "jarvis.appearance";
+const silenceStorageKey = "jarvis.silenceMs";
+const commandWaitStorageKey = "jarvis.commandWaitMs";
+const historyDaysStorageKey = "jarvis.historyDays";
+const historySearchStorageKey = "jarvis.historySearch";
+const aiProfileStorageKey = "jarvis.aiProfile";
+const whisperProfileStorageKey = "jarvis.whisperProfile";
+// 2026-10-21 (later still) owner request: the two mouse-resize fields (the
+// history/answer list and the prompt textarea) remember their grip position
+// per browser.
+const transcriptListHeightKey = "jarvis.transcriptListHeight";
+const promptHeightKey = "jarvis.promptHeight";
+const APPEARANCE_FONT_SCALE_BASE = 82.944;
+const appearanceFontFamilies = {
+  inter: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  system: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+  roboto: 'Roboto, "Segoe UI", ui-sans-serif, system-ui, sans-serif',
+  segoe: '"Segoe UI", Tahoma, Arial, sans-serif',
+  arial: 'Arial, "Helvetica Neue", Helvetica, sans-serif',
+  verdana: 'Verdana, Geneva, Tahoma, sans-serif',
+  trebuchet: '"Trebuchet MS", "Segoe UI", Arial, sans-serif',
+  mono: '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+  courier: '"Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, monospace',
+  serif: 'Georgia, "Times New Roman", serif',
+  times: '"Times New Roman", Times, serif',
+};
+const appearanceDefaults = {
+  fontScale: 100,
+  fontFamily: "inter",
+  textColor: "#d8f3ff",
+  mutedColor: "#77a9bf",
+  accentColor: "#42d9ff",
+  panelColor: "#0b1727",
+  panelOpacity: 82,
+};
+let config;
+// Release marker shown in the header so operators can verify what is live
+// across vm104 + gra-1 + lim-1 after each deploy.
+let appReleaseVersion = "unknown";
+let authedUser = null;
+let voiceId = "browser";
+let voiceSpeed = voiceSpeedRange.default;
+let voiceProvider = "builtin";
+let elevenVoiceId = "";
+let elevenVoiceChoices = [];
+let elevenVoiceChoicesLoaded = false;
+let language = "en";
+let speakEnabled = true;
+let silenceMs = 1500;
+let panelsVisible = true;
+let aiProfileId = "";
+let whisperProfileId = "";
+const mcpServers = [];
+const mcpFlags = {};
+let current = null;
+let sequence = 0;
+// Live state for the pipeline panel's status line and per-step timings.
+let stageTitleNow = "Standby";
+// True while the session is only listening for the wake word — no command
+// turn in flight. Clicking into the prompt box is allowed to disarm then
+// (see the pointerdown handler), but never mid-turn.
+let wakeIdle = false;
+let probeCount = 0;
+let pipelineStatusOverride = null;
+const stepTimers = new Map();
+
+// The hero shows a short caption about what is running — never endpoint
+// URLs, host names or payload sizes. Those stay in the Live log and the
+// pipeline status line.
+const stageCaptions = {
+  standby: "Arm Jarvis to unlock audio and start wake listening. It keeps listening if you minimize the window.",
+  prompting: "Opening the microphone.",
+  wake: "Listening for the wake word.",
+  // applyCommandWait keeps this in sync with the Command wait slider.
+  command: "Waiting for your command. 3 s of silence returns to wake listening.",
+  recording: "Recording your command.",
+  transcribing: "Transcribing your words.",
+  thinking: "The brain is working on an answer. Wake word + new command corrects it; a stop word cancels it.",
+  speaking: "Speaking.",
+  error: "Something went wrong. See the Live log for details.",
+};
+
+// While an answer is being spoken, a parallel watch listens for the wake
+// phrase; saying wake word + "stop" (or another command) cuts the speech.
+// The same watch guards the in-flight brain request (see answer()): nothing
+// is spoken then, but a stop word still cancels the request before the
+// answer arrives and wake word + new command replaces the pending turn.
+// Like the wake probes it fires on the trailing edge of mic voice (350 ms
+// settle) and on the 3 s forced speech cap, so a stop command does not wait
+// longer than 3 s even when the speaker echo keeps the microphone active.
+const speechStopped = Symbol("speech stopped by voice");
+// A stop command heard within this window after an answer's speech finished
+// still counts as a speech stop: the wake pipeline is the fallback for the
+// cut the speech wake-watch could not make while the audio was playing.
+const STOP_AFTER_SPEECH_MS = 10000;
+// The command window after a wake word alone opens with a spoken greeting
+// ("Yes, <name>."); this much silence without a command closes it again and
+// returns to wake listening instead of waiting out the old 10 s. The
+// Command wait slider (COMMAND_WAIT_MIN_MS-COMMAND_WAIT_MAX_MS) overrides it
+// per browser.
+const COMMAND_WAIT_SILENCE_MS = 3000;
+let commandWaitMs = COMMAND_WAIT_SILENCE_MS;
+// How many days of the stored conversation the Conversation panel shows. The
+// backend keeps everything; the History slider (1..31) picks the window the
+// panel renders, per browser.
+const HISTORY_DAYS_MIN = 1;
+const HISTORY_DAYS_MAX = 31;
+const HISTORY_DAYS_DEFAULT = 24;
+let historyDays = HISTORY_DAYS_DEFAULT;
+
+const visualizer = new CoreVisualizer(el.waveform, el.core);
+visualizer.pickAnalyser = () => {
+  const session = current;
+  if (!session) return null;
+  // Speaking shows the agent's own voice when it is tappable; the microphone
+  // drives every other armed stage.
+  return visualizer.stage === "speaking" ? session.voice?.analyser ?? null : session.mic?.analyser ?? null;
+};
+// Numeric readout under the core; the visualizer throttles to ~10 updates/s.
+visualizer.onLevel = (level) => {
+  el.levelReadout.textContent = `LEVEL ${Math.round(level * 100)}%`;
+};
+visualizer.start();
+
+// Animation preview: click a pipeline stage without arming. The live pipeline
+// owns the core while a session runs, so the buttons are disabled then.
+const previewButtons = [...document.querySelectorAll("#stagePreview [data-stage]")];
+const stagePreview = {
+  standby: ["Standby", "Idle breathing. Arm Jarvis for the live pipeline.", null],
+  wake: ["Wake listening", "Preview: slow ring spin. The waveform follows the live mic when armed.", "wake"],
+  recording: ["Recording command", "Preview: fast spin while the VAD waits for 1.5 s of silence.", "record"],
+  transcribing: ["Transcribing", "Preview: flicker while audio goes to Whisper.", "whisper"],
+  thinking: ["Thinking", "Preview: fast flicker while the brain computes.", "brain"],
+  speaking: ["Speaking", "Preview: pulse. The waveform runs a synthetic speech pattern.", "tts"],
+  error: ["Pipeline error", "Preview: shake. The next live stage takes over from here.", null],
+};
+for (const button of previewButtons) {
+  button.addEventListener("click", () => {
+    const [title, detail, active] = stagePreview[button.dataset.stage];
+    stage(button.dataset.stage, title, detail, active);
+  });
+}
+
+// Language switch (English/Deutsch). One click flips the whole pipeline -
+// Whisper, brain and spoken output - from the next request on, without
+// stopping a running session.
+function setLanguage(value, persist) {
+  language = value === "de" ? "de" : "en";
+  const label = language === "de" ? "Deutsch" : "English";
+  el.languageSwitch.setAttribute("aria-checked", String(language === "de"));
+  el.languageSwitch.setAttribute("aria-label", `Language: ${label}`);
+  if (persist) {
+    try {
+      localStorage.setItem(languageStorageKey, language);
+      el.languageStatus.textContent = `Saved: ${label}.`;
+    } catch (error) {
+      el.languageStatus.textContent = `${label} for this tab only; storage unavailable.`;
+      log("settings", "Could not save language", { message: error.message });
+    }
+  } else {
+    el.languageStatus.textContent = `Active: ${label}.`;
+  }
+  log("settings", `Language: ${language}`);
+}
+el.languageSwitch.addEventListener("click", () => {
+  if (el.languageSwitch.disabled) return;
+  setLanguage(language === "de" ? "en" : "de", true);
+});
+
+function selectOptions(profiles, describe) {
+  return profiles.map((profile) => {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = describe(profile);
+    if (profile.configured === false) option.disabled = true;
+    return option;
+  });
+}
+
+function setAiProfile(value, persist) {
+  const profiles = config?.aiProfiles || [];
+  const profile = profiles.find((entry) => entry.id === value && entry.configured !== false)
+    || profiles.find((entry) => entry.id === config?.brainProfileDefault && entry.configured !== false)
+    || profiles.find((entry) => entry.configured !== false);
+  if (!profile) {
+    el.aiProfileStatus.textContent = "No AI endpoint profile is configured on this server.";
+    el.aiProfileStatus.dataset.base = el.aiProfileStatus.textContent;
+    endpointLedState(el.aiProfileLed, "");
+    el.aiProfileSelect.disabled = true;
+    return;
+  }
+  aiProfileId = profile.id;
+  el.aiProfileSelect.value = aiProfileId;
+  el.aiProfileStatus.textContent = `Active: ${profile.label} (${profile.profile || profile.model}).`;
+  el.aiProfileStatus.dataset.base = el.aiProfileStatus.textContent;
+  if (persist) {
+    try {
+      localStorage.setItem(aiProfileStorageKey, aiProfileId);
+    } catch (error) {
+      el.aiProfileStatus.textContent = `${profile.label} for this tab only; storage unavailable.`;
+      log("settings", "Could not save AI endpoint profile", { message: error.message });
+    }
+  }
+  const active = profiles.find((entry) => entry.id === aiProfileId);
+  el.steps.querySelector('[data-step="brain"] .step-name').textContent =
+    active?.model ? `${active.model} brain` : "Brain";
+  log("settings", `AI endpoint: ${profile.label}`);
+}
+
+function setWhisperProfile(value, persist) {
+  const profiles = config?.whisperProfiles || [];
+  const profile = profiles.find((entry) => entry.id === value) || profiles[0];
+  if (!profile) {
+    el.whisperProfileStatus.textContent = "No Whisper server is configured on this server.";
+    el.whisperProfileStatus.dataset.base = el.whisperProfileStatus.textContent;
+    endpointLedState(el.whisperProfileLed, "");
+    el.whisperProfileSelect.disabled = true;
+    return;
+  }
+  whisperProfileId = profile.id;
+  el.whisperProfileSelect.value = whisperProfileId;
+  el.whisperProfileStatus.textContent = `Active: ${profile.label} (${profile.model}).`;
+  el.whisperProfileStatus.dataset.base = el.whisperProfileStatus.textContent;
+  if (persist) {
+    try {
+      localStorage.setItem(whisperProfileStorageKey, whisperProfileId);
+    } catch (error) {
+      el.whisperProfileStatus.textContent = `${profile.label} for this tab only; storage unavailable.`;
+      log("settings", "Could not save Whisper server", { message: error.message });
+    }
+  }
+  log("settings", `Whisper server: ${profile.label}`);
+}
+
+// Green/red LED next to a selector: neutral gray, amber while the connection
+// test runs, green on success, red on failure.
+function endpointLedState(led, state) {
+  led.classList.remove("ok", "fail", "testing");
+  if (state) led.classList.add(state);
+}
+
+// Asks the server to verify one endpoint (brain: a minimal chat completion,
+// whisper: a silent WAV through the real failover path) and reports the
+// result in the LED + the status line. Not tied to a pipeline session, so an
+// armed pipeline keeps running while the test is in flight.
+async function testEndpoint(kind, id, led, status) {
+  if (!id) return;
+  endpointLedState(led, "testing");
+  const base = status.dataset.base || status.textContent;
+  status.dataset.base = base;
+  status.textContent = `${base} · testing connection…`;
+  try {
+    const response = await fetch("/api/endpoint-test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind, id }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(120000),
+    });
+    const data = await response.json();
+    const ok = response.ok && data.ok === true;
+    endpointLedState(led, ok ? "ok" : "fail");
+    const detail = ok ? `connection OK (${data.ms} ms)` : `connection failed: ${data.error || `HTTP ${response.status}`}`;
+    status.textContent = `${base} · ${detail}`;
+    log("settings", `Endpoint test ${kind} ${id}: ${ok ? `OK in ${data.ms} ms` : `FAILED (${data.error || response.status})`}`);
+  } catch (error) {
+    endpointLedState(led, "fail");
+    status.textContent = `${base} · connection failed: ${error.message}`;
+    log("settings", `Endpoint test ${kind} ${id}: FAILED (${error.message})`);
+  }
+}
+
+// A new endpoint selection applies immediately, even mid-pipeline: the
+// running session is aborted (in-flight Whisper/brain/TTS requests die with
+// it) and, if Jarvis was armed, it is armed again so the pipeline resumes in
+// its last state. The speak/text-only switch is a persisted setting and is
+// never touched here.
+function interruptAndResumePipeline(reason) {
+  if (current) {
+    log("settings", `${reason}; interrupting running pipeline and re-arming.`);
+    stop(`${reason}; pipeline restarted with the new endpoint.`);
+    armJarvis();
+  } else {
+    log("settings", `${reason}; pipeline was off, stays off.`);
+  }
+}
+
+el.aiProfileSelect.addEventListener("change", () => {
+  setAiProfile(el.aiProfileSelect.value, true);
+  testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
+  interruptAndResumePipeline("AI endpoint changed");
+});
+el.whisperProfileSelect.addEventListener("change", () => {
+  setWhisperProfile(el.whisperProfileSelect.value, true);
+  testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);
+  interruptAndResumePipeline("Whisper endpoint changed");
+});
+
+// Silence-stop slider: how long the microphone must stay quiet before a
+// recorded command is sent to Whisper. The server default (SILENCE_MS) is only
+// the initial value; the per-browser slider wins and applies live, even while
+// a command is already being recorded (the VAD reads the value on every tick).
+const SILENCE_MIN_MS = 100;
+const SILENCE_MAX_MS = 5000;
+
+function normalizeSilenceMs(value) {
+  const ms = Number(value);
+  return Number.isFinite(ms)
+    ? Math.round(Math.min(SILENCE_MAX_MS, Math.max(SILENCE_MIN_MS, ms)))
+    : 1500;
+}
+
+function silenceStopLabel(ms) {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1).replace(/\.0$/, "")} s`;
+}
+
+function applySilenceDelay(value, persist) {
+  silenceMs = normalizeSilenceMs(value);
+  el.silenceDelay.value = String(silenceMs);
+  el.silenceDelayValue.textContent = silenceStopLabel(silenceMs);
+  // The green silence bar fills to the stop point, so its scale follows.
+  el.silenceLevel.max = silenceMs;
+  el.steps.querySelector('[data-step="vad"] .step-name').textContent =
+    `Stop after ${silenceStopLabel(silenceMs)} silence`;
+  if (persist) {
+    try {
+      localStorage.setItem(silenceStorageKey, String(silenceMs));
+      el.silenceDelayStatus.textContent = `Saved: commands stop after ${silenceStopLabel(silenceMs)} of silence.`;
+    } catch (error) {
+      el.silenceDelayStatus.textContent = `Silence stop ${silenceStopLabel(silenceMs)} for this tab only; browser storage is unavailable.`;
+      log("settings", "Could not save silence stop", { message: error.message });
+    }
+  } else {
+    el.silenceDelayStatus.textContent = `Active: commands stop after ${silenceStopLabel(silenceMs)} of silence.`;
+  }
+  log("settings", `Silence stop ${silenceStopLabel(silenceMs)}`);
+}
+el.silenceDelay.addEventListener("input", () => {
+  silenceMs = normalizeSilenceMs(el.silenceDelay.value);
+  el.silenceDelayValue.textContent = silenceStopLabel(silenceMs);
+  el.silenceLevel.max = silenceMs;
+});
+el.silenceDelay.addEventListener("change", () => applySilenceDelay(el.silenceDelay.value, true));
+
+// Command wait slider: how long the post-greeting command window stays open
+// before returning to wake listening when no command came. The 3 s default is
+// the built-in abort; the per-browser value wins, applies from the next
+// greeting on (the window counts it down live) and persists per browser.
+const COMMAND_WAIT_MIN_MS = 500;
+const COMMAND_WAIT_MAX_MS = 15000;
+
+function normalizeCommandWaitMs(value) {
+  const ms = Number(value);
+  return Number.isFinite(ms)
+    ? Math.round(Math.min(COMMAND_WAIT_MAX_MS, Math.max(COMMAND_WAIT_MIN_MS, ms)))
+    : COMMAND_WAIT_SILENCE_MS;
+}
+
+function applyCommandWait(value, persist) {
+  commandWaitMs = normalizeCommandWaitMs(value);
+  el.commandWait.value = String(commandWaitMs);
+  el.commandWaitValue.textContent = silenceStopLabel(commandWaitMs);
+  // The hero caption carries the current wait, so it follows the slider.
+  stageCaptions.command = `Waiting for your command. ${silenceStopLabel(commandWaitMs)} of silence returns to wake listening.`;
+  if (persist) {
+    try {
+      localStorage.setItem(commandWaitStorageKey, String(commandWaitMs));
+      el.commandWaitStatus.textContent = `Saved: wake listening returns after ${silenceStopLabel(commandWaitMs)} without a command.`;
+    } catch (error) {
+      el.commandWaitStatus.textContent = `Command wait ${silenceStopLabel(commandWaitMs)} for this tab only; browser storage is unavailable.`;
+      log("settings", "Could not save command wait", { message: error.message });
+    }
+  } else {
+    el.commandWaitStatus.textContent = `Active: wake listening returns after ${silenceStopLabel(commandWaitMs)} without a command.`;
+  }
+  log("settings", `Command wait ${silenceStopLabel(commandWaitMs)}`);
+}
+el.commandWait.addEventListener("input", () => {
+  commandWaitMs = normalizeCommandWaitMs(el.commandWait.value);
+  el.commandWaitValue.textContent = silenceStopLabel(commandWaitMs);
+});
+el.commandWait.addEventListener("change", () => applyCommandWait(el.commandWait.value, true));
+
+// History days slider: how far back the Conversation panel reaches into the
+// stored conversation. The backend keeps every turn; the slider picks the
+// window (1..31 days) the panel renders, saved per browser. Moving it
+// re-fetches the window and re-renders the panel.
+function normalizeHistoryDays(value) {
+  const days = Number(value);
+  return Number.isInteger(days) ? Math.min(HISTORY_DAYS_MAX, Math.max(HISTORY_DAYS_MIN, days)) : HISTORY_DAYS_DEFAULT;
+}
+
+function historyDaysLabel(days) {
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+function applyHistoryDays(value, persist) {
+  historyDays = normalizeHistoryDays(value);
+  el.historyDays.value = String(historyDays);
+  el.historyDaysValue.textContent = historyDaysLabel(historyDays);
+  if (persist) {
+    try {
+      localStorage.setItem(historyDaysStorageKey, String(historyDays));
+      el.historyDaysStatus.textContent = `Saved: the panel shows the last ${historyDaysLabel(historyDays)} of conversation.`;
+    } catch (error) {
+      el.historyDaysStatus.textContent = `History ${historyDaysLabel(historyDays)} for this tab only; browser storage is unavailable.`;
+      log("settings", "Could not save history days", { message: error.message });
+    }
+  } else {
+    el.historyDaysStatus.textContent = `Active: the panel shows the last ${historyDaysLabel(historyDays)} of conversation.`;
+  }
+  log("settings", `History ${historyDaysLabel(historyDays)}`);
+  loadConversationHistory();
+}
+el.historyDays.addEventListener("input", () => {
+  historyDays = normalizeHistoryDays(el.historyDays.value);
+  el.historyDaysValue.textContent = historyDaysLabel(historyDays);
+});
+el.historyDays.addEventListener("change", () => applyHistoryDays(el.historyDays.value, true));
+
+// The History search panel: one slider per knob of the backend's
+// `search_history` tool. The backend owns min/max/step/default and advertises
+// them in /api/config (`historySearch`), so the sliders can never offer a
+// value the backend would clamp away — and a backend change moves the UI with
+// it, with no second definition to keep in sync here. Values are saved per
+// browser and ride along with every /api/chat request.
+const historySearchFields = [
+  { key: "days", input: "historySearchDays", output: "historySearchDaysValue", unit: (value) => `${value} day${value === 1 ? "" : "s"}` },
+  { key: "maxResults", input: "historySearchResults", output: "historySearchResultsValue", unit: (value) => `${value} turn${value === 1 ? "" : "s"}` },
+  { key: "snippetChars", input: "historySearchSnippet", output: "historySearchSnippetValue", unit: (value) => `${value} chars` },
+  { key: "memoryTurns", input: "historySearchMemory", output: "historySearchMemoryValue", unit: (value) => `${value} turn${value === 1 ? "" : "s"}` },
+  { key: "minScore", input: "historySearchMinScore", output: "historySearchMinScoreValue", unit: (value) => value.toFixed(2) },
+  { key: "strongScore", input: "historySearchStrongScore", output: "historySearchStrongScoreValue", unit: (value) => value.toFixed(2) },
+];
+// Empty until /api/config lands; an empty object means "use your defaults",
+// which is exactly what the backend does with it.
+let historySearchSettings = {};
+let historySearchSpec = null;
+
+function historySearchDefaults() {
+  return Object.fromEntries(historySearchFields
+    .filter((field) => historySearchSpec?.[field.key])
+    .map((field) => [field.key, historySearchSpec[field.key].default]));
+}
+
+function renderHistorySearch() {
+  for (const field of historySearchFields) {
+    const spec = historySearchSpec?.[field.key];
+    if (!spec) continue;
+    const value = historySearchSettings[field.key] ?? spec.default;
+    el[field.input].value = String(value);
+    el[field.output].textContent = field.unit(Number(value));
+  }
+}
+
+function saveHistorySearch() {
+  try {
+    localStorage.setItem(historySearchStorageKey, JSON.stringify(historySearchSettings));
+    el.historySearchStatus.textContent = "Saved in this browser; applies to the next prompt.";
+  } catch (error) {
+    el.historySearchStatus.textContent = "Active for this tab only; browser storage is unavailable.";
+    log("settings", "Could not save history search settings", { message: error.message });
+  }
+}
+
+// Builds the sliders from the backend's limits, then restores this browser's
+// saved values on top (each one clamped to the advertised range, so a limit
+// the backend tightened later cannot leave a stale value behind).
+function applyHistorySearchConfig(spec) {
+  historySearchSpec = spec || null;
+  if (!historySearchSpec) {
+    el.historySearchStatus.textContent = "This backend does not advertise history-search settings.";
+    return;
+  }
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(historySearchStorageKey) || "{}") || {};
+  } catch {
+    saved = {};
+  }
+  historySearchSettings = historySearchDefaults();
+  for (const field of historySearchFields) {
+    const limits = historySearchSpec[field.key];
+    if (!limits) continue;
+    el[field.input].min = String(limits.min);
+    el[field.input].max = String(limits.max);
+    el[field.input].step = String(limits.step);
+    el[field.input].disabled = false;
+    const value = Number(saved[field.key]);
+    if (Number.isFinite(value)) {
+      historySearchSettings[field.key] = Math.min(limits.max, Math.max(limits.min, value));
+    }
+  }
+  el.historySearchReset.disabled = false;
+  renderHistorySearch();
+  el.historySearchStatus.textContent = Object.keys(saved).length
+    ? "Saved in this browser; applies to the next prompt."
+    : "Backend defaults; change a slider to save your own.";
+}
+
+for (const field of historySearchFields) {
+  const input = el[field.input];
+  if (!input) continue;
+  input.addEventListener("input", () => {
+    historySearchSettings[field.key] = Number(input.value);
+    el[field.output].textContent = field.unit(Number(input.value));
+  });
+  input.addEventListener("change", () => {
+    historySearchSettings[field.key] = Number(input.value);
+    saveHistorySearch();
+    log("settings", `History search ${field.key} = ${input.value}`);
+  });
+}
+
+el.historySearchReset?.addEventListener("click", () => {
+  historySearchSettings = historySearchDefaults();
+  renderHistorySearch();
+  try {
+    localStorage.removeItem(historySearchStorageKey);
+  } catch { /* storage unavailable: the in-memory reset still applies */ }
+  el.historySearchStatus.textContent = "Reset to the backend defaults.";
+  log("settings", "History search settings reset to backend defaults");
+});
+
+// One switch per MCP server (the backend advertises the list in /api/config).
+// Each flag is sent with every /api/chat request as `mcp: { id: bool }` and is
+// saved in local storage per server.
+function buildMcpSwitches() {
+  el.mcpSwitches.replaceChildren(...mcpServers.map((server) => {
+    const wrap = document.createElement("div");
+    wrap.className = "language-control";
+    const button = document.createElement("button");
+    button.id = `mcpSwitch-${server.id}`;
+    button.className = "lang-switch lang-switch-compact";
+    button.type = "button";
+    button.setAttribute("role", "switch");
+    button.setAttribute("aria-checked", "false");
+    button.disabled = true;
+    button.title = `${server.label}: for every prompt the backend runs this MCP server and gives the brain its results as context. Saved in this browser only.`;
+    const off = document.createElement("span");
+    off.className = "lang-option";
+    off.textContent = "off";
+    const on = document.createElement("span");
+    on.className = "lang-option";
+    on.textContent = "on";
+    const knob = document.createElement("span");
+    knob.className = "lang-knob";
+    knob.setAttribute("aria-hidden", "true");
+    button.append(off, on, knob);
+    const status = document.createElement("p");
+    status.id = `mcpStatus-${server.id}`;
+    status.setAttribute("role", "status");
+    status.textContent = `Loading ${server.label.toLowerCase()} settings.`;
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      setMcpFlag(server.id, !mcpFlags[server.id], true);
+    });
+    wrap.append(button, status);
+    return wrap;
+  }));
+}
+
+function setMcpFlag(id, value, persist) {
+  const server = mcpServers.find((entry) => entry.id === id);
+  if (!server) return;
+  mcpFlags[id] = Boolean(value);
+  const state = mcpFlags[id] ? "on" : "off";
+  const button = document.getElementById(`mcpSwitch-${id}`);
+  const status = document.getElementById(`mcpStatus-${id}`);
+  button.setAttribute("aria-checked", String(mcpFlags[id]));
+  button.setAttribute("aria-label", `${server.label}: ${state}`);
+  if (persist) {
+    try {
+      localStorage.setItem(`jarvis.mcp.${id}`, String(mcpFlags[id]));
+      status.textContent = `Saved: ${server.label} ${state}.`;
+    } catch (error) {
+      status.textContent = `${server.label} ${state} for this tab only; storage unavailable.`;
+      log("settings", `Could not save ${server.label} setting`, { message: error.message });
+    }
+  } else {
+    status.textContent = `Active: ${server.label} ${state}.`;
+  }
+  log("settings", `${server.label} (MCP): ${state}`);
+  updateMcpMaster();
+}
+
+// MCP master switch in the conversation panel: one click turns every MCP
+// integration on or off (the per-server switches follow). Each flag is still
+// saved per server, exactly like clicking the individual switches.
+function updateMcpMaster() {
+  const anyOn = Object.keys(mcpFlags).some((id) => mcpFlags[id]);
+  el.mcpMasterSwitch.setAttribute("aria-checked", String(anyOn));
+  el.mcpMasterSwitch.setAttribute("aria-label", `MCP: ${anyOn ? "on" : "off"}`);
+  el.mcpMasterStatus.textContent = anyOn ? "MCP on." : "MCP off.";
+}
+el.mcpMasterSwitch.addEventListener("click", () => {
+  if (el.mcpMasterSwitch.disabled || !mcpServers.length) return;
+  const target = !Object.keys(mcpFlags).some((id) => mcpFlags[id]);
+  for (const server of mcpServers) setMcpFlag(server.id, target, true);
+  log("settings", `MCP: ${target ? "all on" : "all off"}`);
+});
+
+// The Websearch sources panel: this account's list of search engines, news
+// sources and feeds (the /api/websearch/sources endpoints). The server seeds
+// the list with the built-in baseline on first use; built-in rows can be
+// toggled but not removed, the user's own feeds can be removed. The list is
+// injected into the websearch MCP calls per prompt — the brain neither reads
+// nor changes it, and answers attribute only sources that actually ran.
+let websearchSources = [];
+let websearchBusy = false;
+
+async function websearchApi(method, body) {
+  const response = await fetch("/api/websearch/sources", {
+    method, cache: "no-store",
+    ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(10000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+function renderWebsearchSources() {
+  el.websearchSourceList.replaceChildren(...websearchSources.map((row) => {
+    const item = document.createElement("li");
+    item.className = "websearch-source";
+    item.dataset.id = row.id;
+    const kind = document.createElement("span");
+    kind.className = "websearch-source-kind";
+    kind.textContent = row.kind;
+    const name = document.createElement("span");
+    name.className = "websearch-source-name";
+    name.textContent = row.source;
+    name.title = row.url;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "lang-switch websearch-source-toggle";
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-checked", String(Boolean(row.enabled)));
+    toggle.setAttribute("aria-label", `${row.source}: ${row.enabled ? "enabled" : "disabled"}`);
+    toggle.title = row.builtin
+      ? "Built-in source: switch it on or off for this account. It cannot be removed."
+      : "Switch this feed on or off for this account.";
+    const off = document.createElement("span");
+    off.className = "lang-option";
+    off.textContent = "off";
+    const on = document.createElement("span");
+    on.className = "lang-option";
+    on.textContent = "on";
+    const knob = document.createElement("span");
+    knob.className = "lang-knob";
+    knob.setAttribute("aria-hidden", "true");
+    toggle.append(off, on, knob);
+    toggle.addEventListener("click", () => setWebsearchSourceEnabled(row, !row.enabled));
+    item.append(kind, name, toggle);
+    if (!row.builtin) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "websearch-source-remove";
+      remove.textContent = "Remove";
+      remove.title = "Remove this feed from your list.";
+      remove.addEventListener("click", () => removeWebsearchSource(row));
+      item.append(remove);
+    }
+    return item;
+  }));
+}
+
+async function loadWebsearchSources() {
+  if (websearchBusy) return;
+  websearchBusy = true;
+  el.websearchStatus.textContent = "Loading your websearch sources.";
+  try {
+    const payload = await websearchApi("GET");
+    websearchSources = payload.sources || [];
+    renderWebsearchSources();
+    el.websearchStatus.textContent = `${websearchSources.filter((row) => row.enabled).length} of ${websearchSources.length} sources active.`;
+  } catch (error) {
+    el.websearchStatus.textContent = `Could not load your websearch sources: ${error.message}`;
+    log("settings", "Could not load websearch sources", { message: error.message });
+  } finally {
+    websearchBusy = false;
+  }
+}
+
+async function setWebsearchSourceEnabled(row, enabled) {
+  const toggle = el.websearchSourceList.querySelector(`.websearch-source[data-id="${CSS.escape(row.id)}"] .websearch-source-toggle`);
+  if (toggle) toggle.disabled = true;
+  el.websearchStatus.textContent = enabled ? `Enabling ${row.source}…` : `Disabling ${row.source}…`;
+  try {
+    const payload = await websearchApi("PATCH", { id: row.id, enabled });
+    row.enabled = payload.source.enabled;
+    renderWebsearchSources();
+    el.websearchStatus.textContent = `${row.source} ${row.enabled ? "enabled" : "disabled"} for this account.`;
+    log("settings", `Websearch source ${row.source}: ${row.enabled ? "on" : "off"}`);
+  } catch (error) {
+    el.websearchStatus.textContent = `Could not change ${row.source}: ${error.message}`;
+    renderWebsearchSources();
+  }
+}
+
+async function removeWebsearchSource(row) {
+  if (!window.confirm(`Remove "${row.source}" from your websearch sources?`)) return;
+  el.websearchStatus.textContent = `Removing ${row.source}…`;
+  try {
+    await websearchApi("DELETE", { id: row.id });
+    websearchSources = websearchSources.filter((entry) => entry.id !== row.id);
+    renderWebsearchSources();
+    el.websearchStatus.textContent = `Removed ${row.source}.`;
+    log("settings", `Websearch source ${row.source} removed`);
+  } catch (error) {
+    el.websearchStatus.textContent = `Could not remove ${row.source}: ${error.message}`;
+  }
+}
+
+el.websearchAddForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const source = el.websearchAddSource.value.trim();
+  const url = el.websearchAddUrl.value.trim();
+  if (!source || !url) {
+    el.websearchStatus.textContent = "A name and a feed URL are both required.";
+    return;
+  }
+  el.websearchAddButton.disabled = true;
+  el.websearchStatus.textContent = "Adding source…";
+  try {
+    const payload = await websearchApi("POST", { source, url });
+    websearchSources.push(payload.source);
+    renderWebsearchSources();
+    el.websearchAddSource.value = "";
+    el.websearchAddUrl.value = "";
+    el.websearchStatus.textContent = `Added ${payload.source.source} — active for this account from the next search on.`;
+    log("settings", `Websearch source added: ${payload.source.source}`);
+  } catch (error) {
+    el.websearchStatus.textContent = `Could not add the source: ${error.message}`;
+  } finally {
+    el.websearchAddButton.disabled = false;
+  }
+});
+
+// Speak answers on/off. Off means the answer is written to the Conversation panel
+// as text only; the wake pipeline itself keeps running.
+function setSpeakEnabled(value, persist) {
+  speakEnabled = Boolean(value);
+  el.speakSwitch.setAttribute("aria-checked", String(speakEnabled));
+  el.speakSwitch.setAttribute("aria-label", `Answer voice: ${speakEnabled ? "speaking" : "text only"}`);
+  syncVoiceControls();
+  if (persist) {
+    try {
+      localStorage.setItem(speakEnabledStorageKey, String(speakEnabled));
+      el.speakStatus.textContent = `Saved: answers ${speakEnabled ? "are spoken" : "are text only"}.`;
+    } catch (error) {
+      el.speakStatus.textContent = `Answers ${speakEnabled ? "are spoken" : "are text only"} for this tab only; storage unavailable.`;
+      log("settings", "Could not save voice output setting", { message: error.message });
+    }
+  } else {
+    el.speakStatus.textContent = `Active: answers ${speakEnabled ? "are spoken" : "are text only"}.`;
+  }
+  log("settings", `Voice output: ${speakEnabled ? "on" : "off (text only)"}`);
+  if (!speakEnabled) stopCurrentSpeech("Voice output switched to text only; current speech stopped.");
+}
+el.speakSwitch.addEventListener("click", () => {
+  if (el.speakSwitch.disabled) return;
+  setSpeakEnabled(!speakEnabled, true);
+});
+
+function isElevenlabsConfigured() {
+  return Boolean(config?.elevenlabsConfigured);
+}
+
+async function loadElevenVoiceChoices(force = false) {
+  if (!isElevenlabsConfigured()) return;
+  if (elevenVoiceChoicesLoaded && !force) return;
+  try {
+    const suffix = force ? "?fresh=1" : "";
+    const response = await fetch(`/api/elevenlabs/voices${suffix}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    elevenVoiceChoices = Array.isArray(payload?.voices) ? payload.voices : [];
+    elevenVoiceChoicesLoaded = true;
+    if (!elevenVoiceId) elevenVoiceId = config?.elevenlabsVoiceId || "";
+    if (voiceProvider === "elevenlabs") {
+      syncVoiceSelectorOptions();
+      applyElevenVoice(elevenVoiceId || config?.elevenlabsVoiceId || "", false);
+    }
+  } catch (error) {
+    log("settings", "Could not load ElevenLabs voices", { message: error.message });
+    if (voiceProvider === "elevenlabs") {
+      syncVoiceSelectorOptions();
+      el.voiceStatus.textContent = "ElevenLabs voice list unavailable right now. Using configured fallback voice.";
+    }
+  }
+}
+
+function syncVoiceProviderSwitches() {
+  const usingEleven = voiceProvider === "elevenlabs";
+  const canUseEleven = isElevenlabsConfigured();
+  const checked = usingEleven && canUseEleven;
+  const label = checked ? "ElevenLabs" : "Built-in";
+  for (const button of [el.voiceProviderSwitch, el.costsVoiceProviderSwitch]) {
+    if (!button) continue;
+    button.setAttribute("aria-checked", String(checked));
+    button.setAttribute("aria-label", `Answer voice provider: ${label}`);
+    button.classList.toggle("is-elevenlabs", checked);
+  }
+  const status = checked
+    ? "Provider: ElevenLabs."
+    : canUseEleven
+      ? "Provider: Built-in voices."
+      : "Provider: Built-in voices. ElevenLabs is not configured on this backend.";
+  if (el.voiceProviderStatus) el.voiceProviderStatus.textContent = status;
+  if (el.costsProviderStatus) el.costsProviderStatus.textContent = status;
+}
+
+function setVoiceProvider(value, persist) {
+  const normalized = value === "elevenlabs" ? "elevenlabs" : "builtin";
+  if (normalized === "elevenlabs" && !isElevenlabsConfigured()) {
+    voiceProvider = "builtin";
+  } else {
+    voiceProvider = normalized;
+  }
+  syncVoiceProviderSwitches();
+  syncVoiceSelectorOptions();
+  syncVoiceControls();
+  if (voiceProvider === "elevenlabs") {
+    void loadElevenVoiceChoices(true);
+    applyElevenVoice(elevenVoiceId || config?.elevenlabsVoiceId || "", false);
+  } else {
+    applyVoice(voiceId, false);
+  }
+  if (!persist) return;
+  try {
+    localStorage.setItem(voiceProviderStorageKey, voiceProvider);
+  } catch (error) {
+    log("settings", "Could not save voice provider", { message: error.message });
+  }
+}
+
+function syncVoiceControls() {
+  const enabled = Boolean(config);
+  const providerToggleEnabled = Boolean(config) && isElevenlabsConfigured();
+  if (el.voiceProviderSwitch) el.voiceProviderSwitch.disabled = !providerToggleEnabled;
+  if (el.costsVoiceProviderSwitch) el.costsVoiceProviderSwitch.disabled = !providerToggleEnabled;
+  // Keep voice controls available even in "Text only" mode so users can pick
+  // the next answer voice/provider before re-enabling speech.
+  el.voiceSelect.disabled = !enabled;
+  el.saveVoiceButton.disabled = !enabled;
+  el.voiceSpeed.disabled = !enabled;
+}
+
+el.voiceProviderSwitch?.addEventListener("click", () => {
+  if (el.voiceProviderSwitch.disabled) return;
+  setVoiceProvider(voiceProvider === "builtin" ? "elevenlabs" : "builtin", true);
+});
+el.costsVoiceProviderSwitch?.addEventListener("click", () => {
+  if (el.costsVoiceProviderSwitch.disabled) return;
+  setVoiceProvider(voiceProvider === "builtin" ? "elevenlabs" : "builtin", true);
+});
+
+function stopCurrentSpeech(message) {
+  const speech = current?.speech;
+  if (!speech || speech.signal.aborted) return;
+  log("tts", message);
+  speech.abort(speechStopped);
+  speechSynthesis.cancel();
+}
+
+// Show/hide every panel below the Conversation row. Refused while a session
+// runs, because the Stop button lives in the hidden area.
+function setPanelsVisible(value, persist) {
+  if (!value && current) {
+    el.panelsToggle.setAttribute("aria-checked", "true");
+    log("settings", "Panels stay visible while a session runs; stop it first.");
+    return;
+  }
+  panelsVisible = Boolean(value);
+  el.panelsBelow.hidden = !panelsVisible;
+  document.body.classList.toggle("panels-off", !panelsVisible);
+  el.panelsToggle.setAttribute("aria-checked", String(panelsVisible));
+  if (persist) {
+    try {
+      localStorage.setItem(panelsStorageKey, String(panelsVisible));
+    } catch (error) {
+      log("settings", "Could not save panels setting", { message: error.message });
+    }
+  }
+}
+el.panelsToggle.addEventListener("click", () => setPanelsVisible(!panelsVisible, true));
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function normalizeHexColor(value, fallback) {
+  const text = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(text)) return text.toLowerCase();
+  return fallback;
+}
+
+function hexToRgbTriplet(hex) {
+  const value = normalizeHexColor(hex, appearanceDefaults.panelColor);
+  const r = Number.parseInt(value.slice(1, 3), 16);
+  const g = Number.parseInt(value.slice(3, 5), 16);
+  const b = Number.parseInt(value.slice(5, 7), 16);
+  return `${r}, ${g}, ${b}`;
+}
+
+function applyAppearanceSettings(next, persist, fromLoad = false) {
+  const settings = {
+    fontScale: clampNumber(next.fontScale, 50, 500, appearanceDefaults.fontScale),
+    fontFamily: appearanceFontFamilies[next.fontFamily] ? next.fontFamily : appearanceDefaults.fontFamily,
+    textColor: normalizeHexColor(next.textColor, appearanceDefaults.textColor),
+    mutedColor: normalizeHexColor(next.mutedColor, appearanceDefaults.mutedColor),
+    accentColor: normalizeHexColor(next.accentColor, appearanceDefaults.accentColor),
+    panelColor: normalizeHexColor(next.panelColor, appearanceDefaults.panelColor),
+    panelOpacity: clampNumber(next.panelOpacity, 35, 95, appearanceDefaults.panelOpacity),
+  };
+  const root = document.documentElement;
+  const fontPercent = (APPEARANCE_FONT_SCALE_BASE * (settings.fontScale / 100)).toFixed(3);
+  root.style.setProperty("--app-font-size", `${fontPercent}%`);
+  root.style.setProperty("--app-font-multiplier", (settings.fontScale / 100).toFixed(3));
+  root.style.setProperty("--app-font-family", appearanceFontFamilies[settings.fontFamily]);
+  root.style.setProperty("--text", settings.textColor);
+  root.style.setProperty("--muted", settings.mutedColor);
+  root.style.setProperty("--cyan", settings.accentColor);
+  root.style.setProperty("--panel-base-rgb", hexToRgbTriplet(settings.panelColor));
+  root.style.setProperty("--panel-opacity", (settings.panelOpacity / 100).toFixed(2));
+  document.body.classList.toggle("font-scale-large", settings.fontScale >= 200);
+  document.body.classList.toggle("font-family-courier", settings.fontFamily === "courier");
+
+  el.appearanceFontScale.value = String(settings.fontScale);
+  el.appearanceFontScaleValue.textContent = `${Math.round(settings.fontScale)}%`;
+  el.appearanceFontFamily.value = settings.fontFamily;
+  el.appearanceTextColor.value = settings.textColor;
+  el.appearanceMutedColor.value = settings.mutedColor;
+  el.appearanceAccentColor.value = settings.accentColor;
+  el.appearancePanelColor.value = settings.panelColor;
+  el.appearancePanelOpacity.value = String(settings.panelOpacity);
+  el.appearancePanelOpacityValue.textContent = `${Math.round(settings.panelOpacity)}%`;
+
+  if (!persist) {
+    el.appearanceStatus.textContent = fromLoad
+      ? "Appearance loaded for this browser."
+      : "Previewing appearance — saved on release.";
+    return;
+  }
+  try {
+    localStorage.setItem(appearanceStorageKey, JSON.stringify(settings));
+    el.appearanceStatus.textContent = "Appearance saved for this browser.";
+  } catch (error) {
+    el.appearanceStatus.textContent = "Appearance applied for this tab only; storage unavailable.";
+    log("settings", "Could not save appearance settings", { message: error.message });
+  }
+}
+
+function applyAppearanceFromControls(persist) {
+  applyAppearanceSettings({
+    fontScale: el.appearanceFontScale.value,
+    fontFamily: el.appearanceFontFamily.value,
+    textColor: el.appearanceTextColor.value,
+    mutedColor: el.appearanceMutedColor.value,
+    accentColor: el.appearanceAccentColor.value,
+    panelColor: el.appearancePanelColor.value,
+    panelOpacity: el.appearancePanelOpacity.value,
+  }, persist);
+}
+
+for (const id of [
+  "appearanceFontScale", "appearanceFontFamily",
+  "appearanceTextColor", "appearanceMutedColor", "appearanceAccentColor",
+  "appearancePanelColor", "appearancePanelOpacity",
+]) {
+  el[id].addEventListener("input", () => applyAppearanceFromControls(false));
+  el[id].addEventListener("change", () => applyAppearanceFromControls(true));
+}
+
+el.appearanceResetButton.addEventListener("click", () => applyAppearanceSettings(appearanceDefaults, true));
+
+// The native `resize: vertical` grip writes the chosen size to the element's
+// inline `style.height` — so a present inline height is the signal that a
+// user (or this restore) has picked a size, while CSS-driven size changes
+// (content growth, panels on/off) leave it empty and are never persisted.
+// rememberResizeHeight() restores a saved size on load and mirrors the
+// rendered height back to storage on every resize while an inline height is
+// present (global box-sizing is border-box, so the rendered outer height IS
+// the value to store back as style.height).
+function rememberResizeHeight(element, key) {
+  try {
+    const saved = Number(localStorage.getItem(key));
+    if (Number.isFinite(saved) && saved > 0) element.style.height = `${saved}px`;
+  } catch (error) {
+    log("settings", "Could not load the saved field size", { message: error.message });
+  }
+  new ResizeObserver(() => {
+    if (!element.style.height) return;
+    try {
+      localStorage.setItem(key, String(Math.round(element.getBoundingClientRect().height)));
+    } catch (error) {
+      log("settings", "Could not save the field size", { message: error.message });
+    }
+  }).observe(element);
+}
+
+// --- Knowledge graph panel ---------------------------------------------------
+// Third panel inside #panelsBelow, right under the mic level panel (pipeline,
+// then mic level, sit directly below the panels toggle) — shown and hidden
+// with the other panels (the 3D stage resizes via ResizeObserver when the
+// panel becomes visible again). Display only: the backend is read-only
+// against the graph, and the brain can only run read-only Cypher through the
+// MCP graph server.
+
+let graphCenter = null;
+let graphView = "3d"; // "3d" is the default; "2d" is the static SVG view.
+let graph3d = null; // created lazily on first switch to the 3D view
+let graph3dFailed = false; // WebGL unavailable -> stick to 2D
+let lastSubgraph = null; // kept so the 3D scene can be (re)filled on view switch
+let graphRelevance = "near"; // "direct" (≤1 hop) | "near" (≤2) | "all"; persisted per browser
+
+// Display settings for the graph views. Connections brightness + visible
+// entities apply to 3D only, while node/text size apply to both views.
+const GRAPH_ENTITY_LIMIT_MIN = 10;
+const GRAPH_FETCH_LIMIT = 1000;
+const graphScales = { edgeBrightness: 1, entityLimit: Number(el.graphEntityLimit.value) || 60, node: 1, text: 1 };
+let pendingGraphEntityLimit = null;
+
+function graphStatusUrl(force = false) {
+  return force ? `/api/graph/status?refresh=${Date.now()}` : "/api/graph/status";
+}
+
+function syncGraphEntityLimitMax(totalNodes) {
+  if (!Number.isFinite(totalNodes)) return;
+  const dynamicMax = Math.max(GRAPH_ENTITY_LIMIT_MIN, Math.floor(totalNodes));
+  el.graphEntityLimit.max = String(dynamicMax);
+  const requested = Number.isFinite(pendingGraphEntityLimit)
+    ? Math.floor(pendingGraphEntityLimit)
+    : Number(el.graphEntityLimit.value);
+  const clamped = Math.max(GRAPH_ENTITY_LIMIT_MIN, Math.min(dynamicMax, requested));
+  el.graphEntityLimit.value = String(clamped);
+  pendingGraphEntityLimit = null;
+  graphScales.entityLimit = Number(el.graphEntityLimit.value);
+  el.graphEntityLimitValue.textContent = String(Math.round(graphScales.entityLimit));
+}
+
+function compareNodePriority(a, b, degreeMap, centerId) {
+  const aIsCenter = centerId && a.id === centerId ? 0 : 1;
+  const bIsCenter = centerId && b.id === centerId ? 0 : 1;
+  if (aIsCenter !== bIsCenter) return aIsCenter - bIsCenter;
+  const aIsUserMarker = a.type ? 1 : 0;
+  const bIsUserMarker = b.type ? 1 : 0;
+  if (aIsUserMarker !== bIsUserMarker) return aIsUserMarker - bIsUserMarker;
+  const aHops = Number.isFinite(a.hops) ? a.hops : Number.MAX_SAFE_INTEGER;
+  const bHops = Number.isFinite(b.hops) ? b.hops : Number.MAX_SAFE_INTEGER;
+  if (aHops !== bHops) return aHops - bHops;
+  const aIsolated = a.isolated ? 1 : 0;
+  const bIsolated = b.isolated ? 1 : 0;
+  if (aIsolated !== bIsolated) return aIsolated - bIsolated;
+  const aDegree = degreeMap.get(a.id) || 0;
+  const bDegree = degreeMap.get(b.id) || 0;
+  if (aDegree !== bDegree) return bDegree - aDegree;
+  return String(a.id).localeCompare(String(b.id));
+}
+
+function limitSubgraphEntities(subgraph, limit) {
+  if (!subgraph || !Array.isArray(subgraph.nodes) || subgraph.nodes.length <= limit) return subgraph;
+  const edges = Array.isArray(subgraph.edges) ? subgraph.edges : [];
+  const degreeMap = new Map();
+  const adjacency = new Map();
+  for (const edge of edges) {
+    degreeMap.set(edge.source, (degreeMap.get(edge.source) || 0) + 1);
+    degreeMap.set(edge.target, (degreeMap.get(edge.target) || 0) + 1);
+    if (!adjacency.has(edge.source)) adjacency.set(edge.source, new Set());
+    if (!adjacency.has(edge.target)) adjacency.set(edge.target, new Set());
+    adjacency.get(edge.source).add(edge.target);
+    adjacency.get(edge.target).add(edge.source);
+  }
+  const sorted = [...subgraph.nodes].sort((a, b) => compareNodePriority(a, b, degreeMap, graphCenter));
+  const selectedIds = new Set(sorted.slice(0, limit).map((node) => node.id));
+  const pinnedIds = new Set();
+  if (graphCenter) pinnedIds.add(graphCenter);
+  if (!graphCenter) {
+    const rootNode = sorted.find((node) => node.hops === 0);
+    if (rootNode && selectedIds.has(rootNode.id)) pinnedIds.add(rootNode.id);
+  }
+  const pruneDisconnected = () => {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const id of [...selectedIds]) {
+        if (pinnedIds.has(id)) continue;
+        const neighbours = adjacency.get(id);
+        let hasVisibleNeighbour = false;
+        if (neighbours) {
+          for (const neighbour of neighbours) {
+            if (selectedIds.has(neighbour)) {
+              hasVisibleNeighbour = true;
+              break;
+            }
+          }
+        }
+        if (!hasVisibleNeighbour) {
+          selectedIds.delete(id);
+          changed = true;
+        }
+      }
+    }
+  };
+  pruneDisconnected();
+  for (const node of sorted) {
+    if (selectedIds.size >= limit) break;
+    if (selectedIds.has(node.id)) continue;
+    const neighbours = adjacency.get(node.id);
+    if (!neighbours) continue;
+    for (const neighbour of neighbours) {
+      if (selectedIds.has(neighbour)) {
+        selectedIds.add(node.id);
+        break;
+      }
+    }
+  }
+  for (const node of sorted) {
+    if (selectedIds.size >= limit) break;
+    selectedIds.add(node.id);
+  }
+  // The generic fill above can reintroduce one-off nodes whose neighbours sit
+  // outside the limit. Prune once more so visible nodes keep visible links.
+  pruneDisconnected();
+  if (selectedIds.size === 0) {
+    for (const node of sorted.slice(0, limit)) selectedIds.add(node.id);
+  }
+  const selected = sorted.filter((node) => selectedIds.has(node.id)).slice(0, limit);
+  return {
+    ...subgraph,
+    nodes: selected,
+    edges: edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target)),
+  };
+}
+
+function visibleSubgraph3d(subgraph) {
+  const relevant = filterSubgraph(subgraph, graphRelevance);
+  const sliderMax = Number(el.graphEntityLimit.max) || GRAPH_ENTITY_LIMIT_MIN;
+  const limit = Math.max(GRAPH_ENTITY_LIMIT_MIN, Math.min(sliderMax, Math.floor(graphScales.entityLimit)));
+  return limitSubgraphEntities(relevant, limit);
+}
+
+function applyGraphScales() {
+  el.graphPanel.style.setProperty("--graph-node-scale", String(graphScales.node));
+  el.graphPanel.style.setProperty("--graph-text-scale", String(graphScales.text));
+  el.graphEdgeBrightnessValue.textContent = `${Math.round(graphScales.edgeBrightness * 100)}%`;
+  el.graphEntityLimitValue.textContent = String(Math.round(graphScales.entityLimit));
+  el.graphNodeSizeValue.textContent = `${Math.round(graphScales.node * 100)}%`;
+  el.graphTextSizeValue.textContent = `${Math.round(graphScales.text * 100)}%`;
+  if (graph3d) {
+    graph3d.setEdgeBrightness(graphScales.edgeBrightness);
+    graph3d.setNodeScale(graphScales.node);
+    if (lastSubgraph && graphView === "3d") graph3d.update(visibleSubgraph3d(lastSubgraph));
+  }
+  // The 2D view renders the node geometry from the scale at draw time:
+  // re-render the current world (deterministic layout -> no position jump).
+  if (lastSubgraph && !el.graphCanvas.hasAttribute("hidden")) renderGraph(filterSubgraph(lastSubgraph, graphRelevance));
+}
+
+function onGraphScaleInput() {
+  graphScales.edgeBrightness = Number(el.graphEdgeBrightness.value) / 100;
+  graphScales.entityLimit = Number(el.graphEntityLimit.value);
+  graphScales.node = Number(el.graphNodeSize.value) / 100;
+  graphScales.text = Number(el.graphTextSize.value) / 100;
+  try {
+    const serialized = JSON.stringify({
+      edgeBrightness: el.graphEdgeBrightness.value,
+      entityLimit: el.graphEntityLimit.value,
+      node: el.graphNodeSize.value,
+      text: el.graphTextSize.value,
+    });
+    localStorage.setItem(graphSizesStorageKey, serialized);
+    localStorage.setItem(legacyGraphSizesStorageKey, serialized);
+  } catch {
+    // Storage unavailable (private mode): the sliders still work for the
+    // session.
+  }
+  applyGraphScales();
+}
+
+el.graphEdgeBrightness.addEventListener("input", onGraphScaleInput);
+el.graphEntityLimit.addEventListener("input", onGraphScaleInput);
+el.graphEntityLimit.addEventListener("change", onGraphScaleInput);
+el.graphNodeSize.addEventListener("input", onGraphScaleInput);
+el.graphTextSize.addEventListener("input", onGraphScaleInput);
+
+function setGraphView(view) {
+  graphView = view;
+  const use3d = view === "3d" && !graph3dFailed && Boolean(config?.graphConfigured);
+  // toggleAttribute, not the .hidden property: on SVG elements the property
+  // does not reflect the attribute, so the [hidden] CSS would never lift.
+  el.graph3dStage.toggleAttribute("hidden", !use3d);
+  el.graphCanvas.toggleAttribute("hidden", use3d);
+  el.graphView3dButton.classList.toggle("active", use3d);
+  el.graphView2dButton.classList.toggle("active", !use3d);
+  el.graphView3dButton.disabled = !config?.graphConfigured || graph3dFailed;
+  el.graphView2dButton.disabled = !config?.graphConfigured;
+  if (use3d && !graph3d) {
+    graph3d = createGraph3D(el.graph3dStage, {
+      userName: config?.user || null,
+      edgeBrightness: graphScales.edgeBrightness,
+      nodeScale: graphScales.node,
+      onNodeClick: (nodeId) => loadGraph(nodeId),
+      onFallback: () => {
+        // No WebGL in this browser: fall back to the static 2D view.
+        graph3dFailed = true;
+        if (graph3d) { graph3d.dispose(); graph3d = null; }
+        el.graphView3dButton.disabled = true;
+        el.graphView3dButton.title = "WebGL is not available in this browser";
+        setGraphView("2d");
+      },
+    });
+  }
+  // Fill the active view with the newest data (the other view is stale or
+  // empty until its next loadGraph).
+  if (lastSubgraph) {
+    if (use3d && graph3d) graph3d.update(visibleSubgraph3d(lastSubgraph));
+    else if (!use3d) renderGraph(lastSubgraph);
+  }
+}
+
+// The activity entry counts what the write actually stored, not what the
+// extractor emitted: a mention of a registered user is their account node,
+// not an entity, so the feed must say so instead of "stored N entities".
+function ingestLine(entry) {
+  const entities = entry.entities || 0;
+  const links = entry.relations || 0;
+  const skipped = entry.skippedUsers || 0;
+  const unconnected = entry.skippedUnconnected || 0;
+  const orphans = entry.orphansRemoved || 0;
+  // The end-of-ingest check is worth seeing when it fires: it means an
+  // entity no fact touched was removed, not just skipped.
+  const swept = orphans > 0 ? ` · removed ${orphans} unconnected` : "";
+  if (entities > 0) return `stored ${entities} entit${entities === 1 ? "y" : "ies"}${links ? ` + ${links} link${links === 1 ? "" : "s"}` : ""}${swept}`;
+  if (unconnected > 0) return `${unconnected} mention${unconnected === 1 ? "" : "s"} without a fact — nothing stored${swept}`;
+  if (skipped > 0) return `${skipped} user-account mention${skipped === 1 ? "" : "s"} — nothing stored as an entity${swept}`;
+  if (links > 0) return `updated ${links} link${links === 1 ? "" : "s"}${swept}`;
+  return `no new graph data${swept}`;
+}
+
+function renderGraphSchema(schema) {
+  const labels = Array.isArray(schema?.labels) ? schema.labels : [];
+  const relTypes = Array.isArray(schema?.relTypes) ? schema.relTypes : [];
+  const groups = [
+    ["Labels", labels],
+    ["Links", relTypes],
+  ].filter(([, values]) => values.length);
+  if (!groups.length) return "Empty graph.";
+  const sections = document.createElement("div");
+  sections.className = "graph-schema-list";
+  for (const [title, values] of groups) {
+    const section = document.createElement("section");
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const list = document.createElement("ul");
+    for (const value of values) {
+      const item = document.createElement("li");
+      item.textContent = value;
+      list.append(item);
+    }
+    section.append(heading, list);
+    sections.append(section);
+  }
+  return sections;
+}
+
+async function loadGraph(center, { forceStatus = false } = {}) {
+  if (center !== undefined) graphCenter = center;
+  if (!config) return;
+  if (!config.graphConfigured) {
+    el.graphStatus.textContent = "Not configured on this server";
+    el.graphCanvas.replaceChildren();
+    el.graph3dStage.hidden = true;
+    el.graphSchema.textContent = "The backend has no NEO4J_* settings, so the panel is idle.";
+    el.graphActivity.replaceChildren();
+    el.graphRemoveButton.toggleAttribute("hidden", true);
+    return;
+  }
+  try {
+    const [status, subgraph, schema, activity] = await Promise.all([
+      fetch(graphStatusUrl(forceStatus), { cache: "no-store" }).then((response) => response.json()),
+      fetch(`/api/graph/subgraph?limit=${GRAPH_FETCH_LIMIT}${graphCenter ? `&center=${encodeURIComponent(graphCenter)}` : ""}`, { cache: "no-store" }).then((response) => response.json()),
+      fetch("/api/graph/schema", { cache: "no-store" }).then((response) => response.json()),
+      fetch("/api/graph/activity", { cache: "no-store" }).then((response) => response.json()),
+    ]);
+    if (status.error) {
+      el.graphStatus.textContent = status.error === "graph_unavailable" ? `Unreachable: ${status.message || "database down"}` : "Not available";
+      el.graphRemoveButton.toggleAttribute("hidden", true);
+      return;
+    }
+    syncGraphEntityLimitMax(status.nodes);
+    lastSubgraph = subgraph;
+    updateRemoveButton(subgraph);
+    const visible2d = filterSubgraph(subgraph, graphRelevance);
+    const visible3d = visibleSubgraph3d(subgraph);
+    const shownCount = graphView === "3d" ? visible3d.nodes.length : visible2d.nodes.length;
+    // Keep the slider label aligned with what the 3D renderer currently
+    // draws, so reloads cannot show a stale default like "60" next to a
+    // different shown-count in the status line.
+    if (graphView === "3d") el.graphEntityLimitValue.textContent = String(shownCount);
+    el.graphStatus.textContent = `${status.nodes} nodes · ${status.edges} links${graphCenter ? " · neighbourhood" : ""} · ${shownCount} shown`;
+    if (graphView === "3d" && graph3d) graph3d.update(visible3d);
+    else renderGraph(visible2d);
+    const schemaView = renderGraphSchema(schema);
+    if (typeof schemaView === "string") el.graphSchema.textContent = schemaView;
+    else el.graphSchema.replaceChildren(schemaView);
+    const entries = (activity.entries || []).slice(0, 8);
+    if (entries.length) {
+      el.graphActivity.replaceChildren(...entries.map((entry) => {
+        const item = document.createElement("li");
+        const when = new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        item.textContent = entry.kind === "ingest"
+          ? `${when} · ${ingestLine(entry)}`
+          : entry.kind === "delete"
+            ? `${when} · removed ${entry.name || "entity"}`
+            : entry.kind === "brain_write"
+              ? `${when} · brain ${entry.ok === false ? "write failed" : "wrote"} ${entry.detail || entry.tool}`
+              : `${when} · brain ${entry.ok ? "read" : "failed"} ${entry.tool}${entry.detail ? `: ${entry.detail}` : entry.error ? `: ${entry.error}` : ""}`;
+        return item;
+      }));
+    } else {
+      const item = document.createElement("li");
+      item.textContent = "No activity yet.";
+      el.graphActivity.replaceChildren(item);
+    }
+  } catch (error) {
+    el.graphStatus.textContent = `Unreachable: ${error.message}`;
+  }
+}
+
+// The Remove button acts on the centred node. A typed node is an entity
+// (type-less nodes are :User accounts, never deletable); a regular user may
+// only remove entities they own — which is every entity in their view — while
+// the admin (global view) may remove any entity, owner included.
+function updateRemoveButton(subgraph) {
+  const node = (subgraph.nodes || []).find((candidate) => candidate.id === graphCenter);
+  const deletable = Boolean(node && node.type) && (config?.admin === true || node.owner === config?.user);
+  el.graphRemoveButton.toggleAttribute("hidden", !deletable);
+  if (deletable) {
+    const owner = config?.admin === true && node.owner !== config?.user ? ` owned by ${node.owner}` : "";
+    el.graphRemoveButton.textContent = `Remove ${node.name}`;
+    el.graphRemoveButton.title = `Delete "${node.name}"${owner} and its links from the knowledge graph. Cannot be undone.`;
+  }
+}
+
+el.graphRemoveButton.addEventListener("click", async () => {
+  const node = (lastSubgraph?.nodes || []).find((candidate) => candidate.id === graphCenter);
+  if (!node) return;
+  const owner = config?.admin === true && node.owner !== config?.user ? ` owned by ${node.owner}` : "";
+  const sure = window.confirm(`Remove "${node.name}"${owner} from the knowledge graph?\nThis deletes the entity and its links and cannot be undone.`);
+  if (!sure) return;
+  let response;
+  try {
+    response = await fetch(`/api/graph/entity?id=${encodeURIComponent(node.id)}`, { method: "DELETE", cache: "no-store" });
+  } catch (error) {
+    log("graph", `Could not remove ${node.name}`, { message: error.message });
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (response.ok) {
+    log("graph", `Removed ${node.name} from the knowledge graph.`);
+    graphCenter = null;
+    await loadGraph();
+  } else if (response.status === 404) {
+    // Gone already (or not ours): just show the current world again.
+    log("graph", `"${node.name}" is no longer in the knowledge graph.`);
+    graphCenter = null;
+    await loadGraph();
+  } else {
+    log("graph", `Could not remove ${node.name}`, { message: data.message || data.error || `HTTP ${response.status}` });
+  }
+});
+
+// Relevance filter: the backend annotates every node with `hops` — the
+// number of fact-edges (KNOWS bookkeeping excluded) from the view's root
+// (the centred node, or your own account node). "all" keeps everything;
+// "direct" keeps the root + its direct neighbours; "near" keeps two hops.
+// Nodes the root cannot reach (`hops === null`, e.g. your own isolated
+// entities) always stay, and an edge survives only if both endpoints do.
+// A subgraph without `hops` (older backend) is returned unchanged.
+function filterSubgraph(subgraph, relevance) {
+  if (!subgraph || !Array.isArray(subgraph.nodes) || subgraph.nodes.length === 0) return subgraph;
+  const hasHops = subgraph.nodes.some((node) => node.hops !== undefined);
+  if (!hasHops) return subgraph;
+  const threshold = relevance === "direct" ? 1 : relevance === "near" ? 2 : Infinity;
+  if (threshold === Infinity) return subgraph;
+  const kept = new Set();
+  for (const node of subgraph.nodes) {
+    if (node.hops === null || node.hops === undefined || node.hops <= threshold) kept.add(node.id);
+  }
+  const nodes = subgraph.nodes.filter((node) => kept.has(node.id));
+  const edges = Array.isArray(subgraph.edges)
+    ? subgraph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
+    : [];
+  return { ...subgraph, nodes, edges };
+}
+
+// The 2D view: the shared renderer draws into the panel's SVG (viewBox
+// 640x320), scaled by the "Entities" slider.
+function renderGraph(subgraph) {
+  renderGraph2d(el.graphCanvas, subgraph, {
+    nodeScale: graphScales.node,
+    userName: config?.user ?? null,
+    onNodeClick: (nodeId) => loadGraph(nodeId),
+  });
+}
+
+// Refresh resets to the full (newest) view; the background poll keeps the
+// current centre (e.g. after clicking a node) stable.
+el.graphRefreshButton.addEventListener("click", () => loadGraph(null, { forceStatus: true }));
+el.graphView3dButton.addEventListener("click", () => setGraphView("3d"));
+el.graphView2dButton.addEventListener("click", () => setGraphView("2d"));
+el.graphRelevance.addEventListener("change", () => {
+  graphRelevance = el.graphRelevance.value;
+  try {
+    localStorage.setItem(graphRelevanceStorageKey, graphRelevance);
+  } catch {
+    // Storage unavailable (private mode): the filter still works for the
+    // session.
+  }
+  loadGraph();
+});
+
+function log(scope, message, data) {
+  const line = `[${new Date().toLocaleTimeString()}] ${scope}: ${message}`;
+  el.log.textContent = `${el.log.textContent}${line}${data ? ` ${JSON.stringify(data)}` : ""}\n`.slice(-24000);
+  el.log.scrollTop = el.log.scrollHeight;
+}
+
+function stage(kind, title, detail, active = null) {
+  el.core.className = `core ${kind}`;
+  visualizer.setStage(kind);
+  // Only a manual preview (no live session) highlights its button.
+  for (const button of previewButtons) {
+    button.classList.toggle("active", !current && button.dataset.stage === kind);
+  }
+  el.stageTitle.textContent = title;
+  // Standby keeps its message (stop reasons, settings changes); every other
+  // stage gets the short caption. Operational details stay in log + status.
+  el.stageDetail.textContent = (kind === "standby" && detail) ? detail : (stageCaptions[kind] || "");
+  for (const item of el.steps.children) item.classList.remove("active");
+  if (active) mark(active, "active");
+  stageTitleNow = title;
+  // A wake probe runs as "transcribing" between two wake-listening stretches,
+  // so it must not clear the flag; a real command turn (recording, thinking,
+  // speaking, …) does.
+  if (kind === "wake") wakeIdle = true;
+  else if (kind !== "transcribing") wakeIdle = false;
+  pipelineStatusOverride = kind === "error" ? `Error: ${detail}` : null;
+  el.pipelineStatus.textContent = pipelineStatus();
+  syncMiniStage();
+  log("stage", `${title}: ${detail}`);
+}
+
+function pipelineStatus() {
+  if (pipelineStatusOverride) return pipelineStatusOverride;
+  if (!current) return "Idle. Arm Jarvis to start.";
+  const elapsed = Math.floor((performance.now() - current.startedAt) / 1000);
+  const probes = `${probeCount} ${probeCount === 1 ? "probe" : "probes"} sent`;
+  return `${stageTitleNow} · ${elapsed} s armed · ${probes}`;
+}
+
+// The mini pipeline next to Send mirrors the full pipeline panel: one small
+// rectangle per stage, side by side, each carrying its own state color
+// (active amber / done green / skipped dashed / error red / idle muted).
+// The stage labels are static in index.html; only the data-state attribute
+// is synced from the #steps items.
+function syncMiniStage() {
+  for (const chip of el.pipelineMini.children) {
+    const li = el.steps.querySelector(`[data-step="${chip.dataset.step}"]`);
+    const cls = li ? li.className : "";
+    chip.dataset.state =
+      cls === "active" || cls === "done" || cls === "skipped" || cls === "error"
+        ? cls
+        : "idle";
+  }
+}
+
+// The li keeps its status as its only class (tests read className directly),
+// so the state label lives in a child span that mark() keeps in sync.
+function mark(step, status) {
+  const item = el.steps.querySelector(`[data-step="${step}"]`);
+  item.className = status;
+  const state = item.querySelector(".step-state");
+  if (state) {
+    if (status === "active") {
+      stepTimers.set(step, performance.now());
+      state.textContent = "running";
+    } else if (status === "done") {
+      const started = stepTimers.get(step);
+      stepTimers.delete(step);
+      state.textContent = started
+        ? `done in ${((performance.now() - started) / 1000).toFixed(1)} s`
+        : "done";
+    } else if (status === "skipped") {
+      state.textContent = "skipped";
+    } else if (status === "error") {
+      state.textContent = "error";
+    } else {
+      stepTimers.delete(step);
+      state.textContent = "waiting";
+    }
+  }
+  syncMiniStage();
+}
+
+function resetSteps() {
+  for (const step of steps) mark(step, "");
+}
+
+function check(session) {
+  session.signal.throwIfAborted();
+  if (session !== current) throw abortError();
+}
+
+// A failed pipeline step is retried with the material already captured (the
+// recorded audio window, the prompt, the answer text) up to MAX_STEP_ATTEMPTS
+// times instead of returning to wake listening and making the user speak the
+// input again. Only transient failures (upstream errors, timeouts) are
+// retried: aborts from Stop / leaving the page propagate immediately, and once the
+// attempts are exhausted the error reaches the pipeline's usual error stage.
+const MAX_STEP_ATTEMPTS = 3;
+const STEP_RETRY_DELAY_MS = 1000;
+
+async function withStepRetries(session, label, run) {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt += 1) {
+    check(session);
+    try {
+      return await run(attempt);
+    } catch (error) {
+      lastError = error;
+      if (error?.name === "AbortError" || error === speechStopped) throw error;
+      if (attempt >= MAX_STEP_ATTEMPTS) throw error;
+      log("retry", `${label} failed (attempt ${attempt}/${MAX_STEP_ATTEMPTS}): ${error.message}; retrying in ${STEP_RETRY_DELAY_MS} ms`);
+      pipelineStatusOverride = `${label}: retry ${attempt + 1}/${MAX_STEP_ATTEMPTS} after failure (${error.message})`;
+       el.pipelineStatus.textContent = pipelineStatus();
+       await delay(STEP_RETRY_DELAY_MS, session.signal);
+    }
+  }
+  throw lastError;
+}
+
+// The hero's enable/disable toggle mirrors the armed state: "Jarvis on"
+// while a session runs, "Jarvis off" once stopped. Every path that arms or
+// disarms (arm click, manual prompt, Stop, error, page hide) funnels through
+// newSession()/stop(), so syncing there covers all of them.
+function syncEnableSwitch() {
+  el.enableSwitch.setAttribute("aria-checked", current ? "true" : "false");
+}
+
+function stop(message = "Jarvis is disarmed.") {
+  const old = current;
+  current = null;
+  stopMeters();
+  old?.controller.abort(abortError());
+  speechSynthesis.cancel();
+  el.armButton.disabled = !config;
+  el.sendManualButton.disabled = !config;
+  el.mcpMasterSwitch.disabled = !config;
+  el.stopButton.disabled = true;
+  syncEnableSwitch();
+  for (const button of previewButtons) button.disabled = !config;
+  el.micLevel.value = 0;
+  el.micLevelValue.textContent = "0%";
+  el.silenceLevel.value = 0;
+  el.silenceValue.textContent = "0 ms";
+  visualizer.resetLevel();
+  el.levelReadout.textContent = "LEVEL 0%";
+  // A disarmed pipeline has no running session, so every step returns to
+  // waiting instead of keeping its last done/skipped/error highlight.
+  resetSteps();
+  stage("standby", "Stopped", message);
+}
+
+function newSession() {
+  stop();
+  const controller = new AbortController();
+  const session = {
+    controller,
+    signal: controller.signal,
+    id: ++sequence,
+    startedAt: performance.now(),
+    commandHeard: false,
+    // Pin the selected ElevenLabs voice at session start so wake-greeting /
+    // wake-answer speech cannot drift to a fallback voice while the provider
+    // list refreshes in the background.
+    elevenVoiceId: activeElevenVoiceId(),
+  };
+  current = session;
+  probeCount = 0;
+  pipelineStatusOverride = null;
+  el.armButton.disabled = true;
+  el.sendManualButton.disabled = true;
+  el.mcpMasterSwitch.disabled = true;
+  el.stopButton.disabled = false;
+  syncEnableSwitch();
+  for (const button of previewButtons) button.disabled = true;
+  resetSteps();
+   el.pipelineStatus.textContent = pipelineStatus();
+   log("session", `Started ${session.id}`);
+  return session;
+}
+
+async function request(session, url, options = {}) {
+  check(session);
+  const { signal: external, ...rest } = options;
+  const timeout = AbortSignal.timeout(60000);
+  const signals = [session.signal, timeout];
+  if (external) signals.push(external);
+  const signal = AbortSignal.any(signals);
+  const response = await fetch(url, { ...rest, signal, cache: "no-store" });
+  const data = await response.json();
+  check(session);
+  if (!response.ok || data.error) {
+    log("backend", "Request failed", data);
+    throw new Error(data.message || data.error || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function transcribe(session, start, purpose) {
+  check(session);
+  const blob = session.mic.buffer.wav(start);
+  if (purpose === "wake") probeCount += 1;
+  const whisperProfile = config.whisperProfiles?.find((profile) => profile.id === whisperProfileId);
+  stage("transcribing", purpose === "wake" ? "Checking wake word" : "Transcribing command",
+    `Sending ${Math.round(blob.size / 1024)} KB to ${whisperProfile?.label || "Whisper"}`, purpose === "wake" ? "wake" : "whisper");
+  // Audible feedback that the captured audio left the browser and the
+  // transcription is starting: a soft tick for wake probes, a higher ping for
+  // the command.
+  if (purpose === "wake") session.mic.probeBeep();
+  else session.mic.sentBeep();
+  const result = await request(session, `/api/transcribe?language=${language}&whisperProfile=${encodeURIComponent(whisperProfileId)}`, {
+    method: "POST", headers: { "content-type": blob.type }, body: blob,
+  });
+  log("stt", `Last ${purpose}: ${result.endpoint} | request ${result.requestId}`);
+  const { text, ...details } = result;
+  log("whisper", `${purpose === "wake" ? "Wake probe" : "Command"} recognized: ${text ? JSON.stringify(text) : "(no speech recognized)"}`);
+  log("whisper", "Response details", details);
+  return result.text || "";
+}
+
+async function tick(session) {
+  // Paced by capture blocks rather than a bare timer, so the loop keeps its
+  // 100 ms cadence while the window is minimized; see Microphone.tick.
+  await session.mic.tick(100, session.signal);
+  check(session);
+  session.mic.check();
+}
+
+// The mic level and the silence bar are driven by their own 100 ms interval,
+// not by the pipeline loop: the loop is suspended for the whole Whisper/brain
+// round trip, so loop-owned meters froze at their last value (usually ~400 ms
+// of silence) and then jumped straight to full when the round trip returned.
+// The dedicated timer keeps both bars filling in real time while audio is in
+// flight, and the silence bar tracks trailing silence during wake listening,
+// so speaking the wake word is visible (the probe fires once speech settles
+// for 350 ms).
+let meterTimer = 0;
+function startMeters() {
+  stopMeters();
+  meterTimer = setInterval(updateMeters, 100);
+}
+function stopMeters() {
+  if (meterTimer) clearInterval(meterTimer);
+  meterTimer = 0;
+}
+function updateMeters() {
+  const session = current;
+  if (!session || !session.mic) return;
+  const buffer = session.mic.buffer;
+  el.micLevel.value = Math.min(100, buffer.level * 800);
+  el.micLevelValue.textContent = `${Math.round(el.micLevel.value)}%`;
+  const silentMs = (buffer.end - buffer.lastVoice) / buffer.sampleRate * 1000;
+  // Trailing silence while wake listening and while recording a command once
+  // voice has been heard; while the command window waits for the user after a
+  // wake word alone the bar fills toward the command-wait abort (counted
+  // from the greeting's end) instead of sitting flat, and it stays flat while
+  // the answer speaks or the pipeline is idle.
+  const kind = visualizer.stage;
+  let silence = 0;
+  if (kind === "wake" || kind === "transcribing" || kind === "thinking"
+    || ((kind === "recording" || kind === "prompting") && session.commandHeard)) {
+    silence = Math.min(silenceMs, silentMs);
+  } else if (kind === "command") {
+    silence = session.commandHeard
+      ? Math.min(silenceMs, silentMs)
+      : (session.commandWaitStartedAt ? Math.min(commandWaitMs, performance.now() - session.commandWaitStartedAt) : 0);
+  }
+  // The bar's scale follows the active cap so both fills reach 100% at their
+  // own trigger point.
+  const barMax = kind === "command" && !session.commandHeard ? commandWaitMs : silenceMs;
+  if (Number(el.silenceLevel.max) !== barMax) el.silenceLevel.max = barMax;
+  el.silenceLevel.value = silence;
+  el.silenceValue.textContent = `${Math.round(silence)} ms`;
+  const status = pipelineStatus();
+  if (status !== el.pipelineStatus.textContent) el.pipelineStatus.textContent = status;
+}
+
+// The signed-in account's name, so the command window opens with "Yes, Mila."
+// rather than a bare beep.
+function greetingText() {
+  const name = authedUser || "there";
+  return language === "de"
+    ? `Ja ${name}`
+    : `Yes ${name}`;
+}
+
+// When the user's command merged into the greeting's echo event, the command
+// window's audio starts at the greeting's end and its transcript can open
+// with the echoed name (or a "yes"/"ja" plus the name). Drop that prefix so
+// the brain gets the command, not the greeting's tail.
+function stripGreetingEcho(text) {
+  const name = (authedUser || "").trim().toLowerCase();
+  const words = text.trim().split(/\s+/);
+  const plain = (word) => word.toLowerCase().replace(/[^a-zäöüß0-9]/g, "");
+  let drop = 0;
+  if (name) {
+    if (["yes", "yeah", "yep", "ja"].includes(plain(words[0] || "")) && plain(words[1] || "") === name) drop = 2;
+    else if (plain(words[0] || "") === name) drop = 1;
+  }
+  return words.slice(drop).join(" ");
+}
+
+// The command window opens with the spoken greeting, so the user hears that
+// the assistant is listening. The beep keeps that cue when the voice output
+// is switched off or the TTS fails.
+async function announceCommandWindow(session) {
+  if (!speakEnabled) {
+    session.mic.beep();
+    log("tts", "Voice output is off; the command window opens with a beep.");
+    return;
+  }
+  try {
+    await speakText(session, greetingText(), session.signal);
+  } catch (error) {
+    if (session.signal.aborted) throw error;
+    log("tts", `Greeting failed (${error.message}); falling back to the beep.`);
+    session.mic.beep();
+  }
+}
+
+// Waits for the command to end and returns the sample offset its audio starts
+// at (false closes the window instead). The mode decides how the window
+// opens:
+//
+// "greeting" — the wake word was spoken alone: the window opens with the
+// spoken greeting and its transcript starts where the greeting ends, so the
+// user's command is captured whenever it comes — even over the greeting's
+// echo tail. That first voice event is the echo, or the user's command merged
+// into it: when it ends, a level hold past the echo's decay
+// (heldVoiceAfterEcho) marks it as command audio, and a voice event that
+// starts separately afterwards is the command by construction.
+// "post-speech" — the window opens right where a spoken answer (or a
+// stop-acknowledged turn) ended: the record stage and its abort clock start
+// at once, so the user can chain the next command without the wake word. The
+// echo phase sorts out the answer's speaker tail exactly like the greeting's.
+// "inline" — the command was already spoken with the wake word; only its end
+// is awaited (no abort clock).
+//
+// For the two post-speech modes, commandWaitMs (the Command wait slider,
+// 3 s default) without a command closes the window and returns to wake
+// listening. The clock runs from the window's opening, not from the last mic
+// voice, because browser echo cancellation can keep the spoken audio out of
+// the capture entirely — then the last voice is the wake word or some older
+// event and the silence clock would already be spent when the window opens.
+// Once speech has started, the silence stop ends it like any other command.
+async function waitForCommandEnd(session, start, mode) {
+  const buffer = session.mic.buffer;
+  const started = performance.now();
+  let speechAfter = start;
+  let eventStart = 0;
+  let openAt = 0;
+  let phase = "";
+  const postSpeech = mode !== "inline";
+  // Safety net for a never-quiet microphone; a long command wait must stay
+  // open past the old 15 s, so the cap follows the wait.
+  const capMs = postSpeech ? Math.max(15000, commandWaitMs) + 5000 : 15000;
+  if (mode === "greeting") {
+    // The greeting is spoken before the command window opens: the record
+    // stage, its silence bar and its abort clock all start when the greeting
+    // ends, so the full command wait runs after the user has heard it —
+    // nothing counts down while "Yes, <name>." is still playing.
+    session.commandHeard = false;
+    stage("speaking", "Speaking", "Saying the greeting.", "tts");
+    await announceCommandWindow(session);
+    check(session);
+    // The transcript starts where the spoken greeting ends: everything the
+    // user says from here on is in the window. The greeting's echo tail
+    // shares that opening with a fast command, so it is sorted out below
+    // instead of waiting it out (which used to exclude commands spoken right
+    // after the greeting).
+    speechAfter = buffer.end;
+  }
+  if (postSpeech) {
+    // The window opens where the last speech ended (greeting or answer);
+    // everything from there is command audio.
+    session.commandHeard = false;
+    session.commandWaitStartedAt = performance.now();
+    stage("command", "Waiting for command",
+      `Say your command now. ${silenceStopLabel(commandWaitMs)} of silence returns to wake listening.`, "record");
+    phase = "echo";
+  } else {
+    stage("recording", "Listening for command", `Stops after ${silenceStopLabel(silenceMs)} of silence.`, "record");
+    session.commandHeard = true;
+  }
+  let shown = 0;
+  while (performance.now() - started < capMs) {
+    await tick(session);
+    const silentMs = (buffer.end - buffer.lastVoice) / buffer.sampleRate * 1000;
+    if (postSpeech) {
+      if (phase === "echo" && silentMs >= silenceMs) {
+        // The first voice event (echo tail, or a command merged into it) has
+        // ended; the window is open for a separate command.
+        phase = "open";
+        openAt = buffer.end;
+        const source = mode === "greeting" ? "greeting's" : "answer's";
+        if (heldVoiceAfterEcho(buffer.samples, speechAfter, buffer.end, buffer.sampleRate)) {
+          // The user talked over the echo: the whole window is command audio
+          // and closes on this event's silence, transcribed from where the
+          // opening speech ended.
+          session.commandHeard = true;
+          log("vad", `Command heard over the ${source} echo`);
+        }
+      } else if (phase === "open" && !session.commandHeard && buffer.lastVoice > openAt) {
+        // A voice event that started after the echo settled is the command.
+        phase = "speaking";
+        eventStart = Math.max(speechAfter, buffer.lastVoice - buffer.sampleRate * 0.4);
+        session.commandHeard = true;
+        log("vad", mode === "greeting" ? "Command heard after the greeting" : "Command heard after the answer");
+      }
+      if (session.commandHeard) {
+        mark("vad", "active");
+        if (silentMs >= silenceMs) {
+          mark("record", "done");
+          mark("vad", "done");
+          return eventStart || speechAfter;
+        }
+      } else if (silentMs >= silenceMs && performance.now() - session.commandWaitStartedAt >= commandWaitMs) {
+        // No command after the opening speech: let the caller return to wake
+        // listening instead of surfacing a dead-end pipeline error. The wait
+        // also needs the mic actually quiet, so a command that starts in the
+        // last moment of the wait is not cut off at the deadline — it just
+        // ends on the silence stop like any other command.
+        log("record", `No command after ${silenceStopLabel(commandWaitMs)} of silence; returning to wake listening.`);
+        return false;
+      }
+    } else {
+      if (buffer.lastVoice > speechAfter) session.commandHeard = true;
+      if (session.commandHeard) {
+        mark("vad", "active");
+        if (silentMs >= silenceMs) {
+          mark("record", "done");
+          mark("vad", "done");
+          return speechAfter;
+        }
+      }
+    }
+    // This stage can hold for up to the command limit on a noisy microphone
+    // that never goes quiet, so count down in the pipeline status line
+    // rather than looking frozen. Updated without stage() so the live log is
+    // not flooded. The post-speech windows count from their own start, so
+    // the elapsed seconds never include the opening speech.
+    const elapsed = postSpeech
+      ? performance.now() - session.commandWaitStartedAt
+      : performance.now() - started;
+    if (elapsed - shown >= 500) {
+      shown = elapsed;
+      pipelineStatusOverride = session.commandHeard
+        ? `Recording: ${(elapsed / 1000).toFixed(1)} s. Stops after ${Math.max(0, Math.round(silenceMs - silentMs))} ms more silence, or at the limit.`
+        : `Waiting for command: ${(elapsed / 1000).toFixed(1)} s. ${Math.max(1, Math.ceil((commandWaitMs - (performance.now() - session.commandWaitStartedAt)) / 1000))} s of silence returns to wake listening. Mic level ${Math.round(buffer.level * 1000) / 10}%.`;
+      el.pipelineStatus.textContent = pipelineStatus();
+    }
+  }
+  log("record", "Command limit reached; transcribing captured speech");
+  mark("record", "done");
+  mark("vad", "done");
+  return eventStart || speechAfter;
+}
+
+async function listen(session) {
+  let failures = 0;
+  while (!session.signal.aborted) {
+    check(session);
+    resetSteps();
+    const buffer = session.mic.buffer;
+    const floor = buffer.end;
+    let probedThrough = floor;
+    let speechFrom = null;
+    stage("wake", "Wake listening", `Say "${config.wakePhrase}".`, "wake");
+    try {
+      // True once a turn ended in spoken output (an answered command or an
+      // acknowledged stop word): the follow-up command window then opens
+      // instead of returning straight to wake listening.
+      let turnEndedWithSpeech = false;
+      for (;;) {
+        await tick(session);
+        if (buffer.lastVoice <= probedThrough) continue;
+        // Probe on the trailing edge of speech, not on a fixed interval: a window
+        // that ends mid-word comes back from Whisper empty, so the phrase is only
+        // heard one probe cycle later. Hold until the talker stops; if speech runs
+        // on, probe anyway once this burst reaches the cap. The cap counts speech,
+        // not wall time, so leading silence cannot trip it mid-word.
+        speechFrom ??= buffer.lastVoice;
+        const settled = (buffer.end - buffer.lastVoice) / buffer.sampleRate * 1000 >= 350;
+        const forced = !settled && buffer.end - speechFrom >= buffer.sampleRate * 3;
+        if (!settled && !forced) continue;
+        // Settled probes overlap the previous window by 2 s so a phrase crossing
+        // the boundary is not lost. A forced probe (3 s of unbroken speech, e.g.
+        // a noisy microphone that never settles) covers everything since the last
+        // probe, so a short wake phrase cannot fall into the gap between probes.
+        const start = settled
+          ? Math.max(floor, probedThrough - buffer.sampleRate * 2, buffer.end - buffer.sampleRate * 25)
+          : Math.max(floor, probedThrough, buffer.end - buffer.sampleRate * 25);
+        probedThrough = buffer.end;
+        speechFrom = null;
+        log("wake", forced ? "Probe triggered by the 3 s speech cap (microphone never settled)" : "Probe triggered after speech settled");
+        const text = await withStepRetries(session, "wake probe", () => transcribe(session, start, "wake"));
+        failures = 0;
+        if (wakeCommand(text, config.wakePhrase) === null) {
+          // A bare acknowledgment ("ok", "thank you") right after a spoken
+          // turn — the follow-up window already closed — is the same polite
+          // ending as inside the window: full match anywhere, or a trailing
+          // match over the answer's echo gated by a loud user burst, exactly
+          // like the post-speech stop fallback (same 10 s window).
+          const ackKind = session.lastSpeechEndedAt > 0 &&
+              performance.now() - session.lastSpeechEndedAt < STOP_AFTER_SPEECH_MS
+            ? acknowledgmentIn(text) ??
+              (hasLoudBurst(buffer.samples, start, buffer.end, buffer.sampleRate) &&
+               acknowledgmentIn(text, { trailing: true }))
+            : null;
+          if (ackKind) {
+            log("wake", `Acknowledgment ${JSON.stringify(text.trim())} after the spoken turn; a polite closing is spoken instead of the brain.`);
+            await acknowledge(session, text.trim());
+            turnEndedWithSpeech = true;
+            break;
+          }
+          stage("wake", "Wake listening", `No wake phrase heard. Say "${config.wakePhrase}".`, "wake");
+          continue;
+        }
+        mark("wake", "done");
+        log("wake", "Detected; completing the buffered utterance");
+        // Capture continues during the Whisper request, including command tails.
+        await waitForCommandEnd(session, start, "inline");
+        const fullText = await withStepRetries(session, "command transcription", () => transcribe(session, start, "command"));
+        let prompt = wakeCommand(fullText, config.wakePhrase);
+        // The probe heard the wake phrase but the completed-utterance
+        // transcription came back empty (the VAD filter drops short bursts):
+        // treat it as a wake-only utterance and ask for the command after the
+        // greeting instead of failing the pipeline.
+        if (prompt === null && !fullText.trim()) {
+          log("wake", "Completed utterance came back empty; waiting for the command after the greeting.");
+          prompt = "";
+        }
+        if (prompt === null) {
+          // A bare stop word right after the spoken answer (no wake phrase)
+          // is the same escape hatch as the wake-word stop: acknowledge it
+          // and stay in wake listening instead of erroring. With speaker echo
+          // the window's transcript is the answer's own words plus the stop
+          // word, so the match needs a loud user burst in the window's audio.
+      if (isPostSpeechStop(fullText, session.lastSpeechEndedAt, performance.now(), STOP_AFTER_SPEECH_MS,
+               { userBurst: hasLoudBurst(buffer.samples, start, buffer.end, buffer.sampleRate) })) {
+            log("tts", `Stop word ${Math.round((performance.now() - session.lastSpeechEndedAt) / 100) / 10}s after the spoken answer without a wake phrase; opening the follow-up command window.`);
+            session.mic.beep();
+            turnEndedWithSpeech = true;
+            break;
+          }
+          throw new Error("Whisper did not confirm the wake phrase in the completed utterance.");
+        }
+        if (!prompt) {
+          // The window starts where the spoken greeting ends; a command that
+          // merged into the greeting's echo is transcribed with it, so the
+          // echoed name is stripped from the front of the result.
+          const commandWindow = await waitForCommandEnd(session, buffer.end, "greeting");
+          if (commandWindow) {
+            const rawCommand = await withStepRetries(session, "command transcription", () => transcribe(session, commandWindow, "command"));
+            const commandText = stripGreetingEcho(rawCommand);
+            prompt = wakeCommand(commandText, config.wakePhrase) ?? commandText.trim();
+          }
+        } else {
+          session.mic.beep();
+        }
+        if (!prompt) {
+          // The command was spoken with the wake word and transcription lost
+          // it, or nothing came after the greeting: a red error here is a
+          // dead end, so return to wake listening and let the next attempt
+          // retry.
+          log("wake", "No command captured with or after the wake word; returning to wake listening.");
+          break;
+        }
+        mark("whisper", "done");
+        // A stop command spoken WITH the wake word disarms the voice command
+        // mode entirely (text-only until the enable switch re-arms wake
+        // listening). It takes precedence over the post-speech fallback below,
+        // which only acknowledges a bare stop and keeps the session armed.
+        if (isStopCommand(prompt)) {
+          log("wake", `Wake-word stop command ${JSON.stringify(prompt)}; disarming the voice command mode.`);
+          stop("Disarmed by voice — text-only mode. Click the enable switch to wake listening again.");
+          return;
+        }
+        // A stop command heard shortly after a spoken answer is not a prompt
+        // for the brain; it just confirms the speech is over. The burst-gated
+        // match covers the echoed window, exactly like the wake pipeline above.
+     if (isPostSpeechStop(prompt, session.lastSpeechEndedAt, performance.now(), STOP_AFTER_SPEECH_MS,
+             { userBurst: hasLoudBurst(buffer.samples, start, buffer.end, buffer.sampleRate) })) {
+          log("tts", `Stop command ${Math.round((performance.now() - session.lastSpeechEndedAt) / 100) / 10}s after the spoken answer; opening the follow-up command window.`);
+          session.mic.beep();
+          turnEndedWithSpeech = true;
+          break;
+        }
+        if (acknowledgmentKind(prompt)) {
+          // Nothing for the brain to answer: end the turn politely. The
+          // closing is spoken output, so the follow-up command window opens
+          // after it like after any answer.
+          await acknowledge(session, prompt);
+          turnEndedWithSpeech = true;
+          break;
+        }
+        await answer(session, prompt);
+        turnEndedWithSpeech = true;
+        break;
+      }
+      // After an answered or stop-acknowledged turn the next command can come
+      // without the wake word: the record-command window opens where the
+      // speech ended (its echo phase sorts out the speaker tail) and only a
+      // full command wait of silence returns to wake listening.
+      if (turnEndedWithSpeech) {
+        for (;;) {
+          check(session);
+          const mode = session.commandWindowNeedsGreeting ? "greeting" : "post-speech";
+          session.commandWindowNeedsGreeting = false;
+          const commandWindow = await waitForCommandEnd(session, buffer.end, mode);
+          if (!commandWindow) break;
+          const rawCommand = await withStepRetries(session, "command transcription", () => transcribe(session, commandWindow, "command"));
+          const wakeHit = wakeCommand(rawCommand, config.wakePhrase);
+          const followUp = wakeHit ?? rawCommand.trim();
+          if (!followUp) {
+            log("wake", "No command after the answer; returning to wake listening.");
+            break;
+          }
+          mark("whisper", "done");
+          // A stop command spoken WITH the wake word disarms the voice command
+          // mode, same as in wake listening; a bare stop (no wake word) stays
+          // the post-speech escape hatch below and keeps the window open.
+          if (wakeHit !== null && isStopCommand(wakeHit)) {
+            log("wake", `Wake-word stop command ${JSON.stringify(wakeHit)} in the follow-up window; disarming the voice command mode.`);
+            stop("Disarmed by voice — text-only mode. Click the enable switch to wake listening again.");
+            return;
+          }
+          // A stop word inside the follow-up window is the same escape hatch
+          // (the user cut the answer and then says "stop" again, or the
+          // window's audio carries the stop over the answer's echo):
+          // acknowledge it and keep the window open instead of prompting the
+          // brain. lastSpeechEndedAt stays fresh, so the 10 s post-speech
+          // window still applies.
+          if (isPostSpeechStop(followUp, session.lastSpeechEndedAt, performance.now(), STOP_AFTER_SPEECH_MS,
+              { userBurst: hasLoudBurst(buffer.samples, commandWindow, buffer.end, buffer.sampleRate) })) {
+            log("tts", "Stop word after the spoken answer; keeping the command window open.");
+            session.mic.beep();
+            continue;
+          }
+          // The trailing match (burst-gated, like the stop fallback) covers
+          // the echo-merged window: the answer's own last words plus the
+          // user's "Ok" transcribe as one utterance.
+          const ackKind = acknowledgmentIn(followUp) ??
+            (hasLoudBurst(buffer.samples, commandWindow, buffer.end, buffer.sampleRate) &&
+             acknowledgmentIn(followUp, { trailing: true }));
+          if (ackKind) {
+            // Polite closing instead of a brain round trip; the closing is
+            // spoken output, so the window re-opens after it.
+            await acknowledge(session, followUp);
+            continue;
+          }
+          await answer(session, followUp);
+        }
+      }
+    } catch (error) {
+      check(session);
+      log("error", error.message);
+      const failed = el.steps.querySelector(".active");
+      if (failed) {
+        failed.classList.add("error");
+        failed.querySelector(".step-state")?.replaceChildren("error");
+      }
+      stage("error", "Pipeline error", error.message);
+      await delay(Math.min(15000, 2000 * 2 ** failures++), session.signal);
+      session.mic.check();
+    }
+  }
+}
+
+// The Conversation panel holds the conversation history, not just the
+// latest turn: every finished turn (brain answer, butler closing, manual
+// prompt) appends one entry per panel with a timestamp. The backend stores
+// the whole conversation in SQLite under the signed-in user and serves it
+// windowed to ?days=N (see /api/conversation in server.js); the History
+// slider picks N per browser and the panels are the scrollable view over
+// the window. A turn in flight shows a pending answer entry until it
+// completes or fails.
+function formatTranscriptTime(ts) {
+  return new Date(ts).toLocaleString(language === "de" ? "de-DE" : "en-GB", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function transcriptEntry(text, ts, role, sources) {
+  const entry = document.createElement("div");
+  entry.className = `transcript-entry transcript-entry-${role}`;
+  const head = document.createElement("div");
+  head.className = "transcript-head";
+  const time = document.createElement("time");
+  time.className = "transcript-time";
+  time.dateTime = new Date(ts).toISOString();
+  time.textContent = `${formatTranscriptTime(ts)} · ${role === "prompt" ? "You" : "Jarvis"}`;
+  head.append(time);
+  appendSourceTag(head, role, sources);
+  const body = document.createElement("div");
+  body.className = "transcript-body";
+  // Answers render as Markdown (structured output); prompts stay verbatim. The
+  // raw Markdown is kept on the element so Copy always copies the source text.
+  body._rawMarkdown = text;
+  if (role === "answer") body.innerHTML = renderMarkdown(text);
+  else body.textContent = text;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "transcript-copy";
+  copy.textContent = "Copy";
+  copy.title = "Copy this text to the clipboard in markdown format";
+  copy.addEventListener("click", () => copyEntryText(copy, body));
+  entry.append(head, body, copy);
+  return entry;
+}
+
+// Adds the "· web search + graph" attribution tag to an answer's timestamp row
+// when the brain actually used those sources this turn.
+function appendSourceTag(head, role, sources) {
+  if (!head || role === "prompt" || !sources || !(sources.websearch || sources.graph)) return;
+  const parts = [];
+  if (sources.websearch) {
+    const names = (Array.isArray(sources.websearchSources) ? sources.websearchSources : [])
+      .map((name) => String(name || "").trim()).filter(Boolean);
+    parts.push(names.length ? `web search: ${names.join(" · ")}` : "web search");
+  }
+  if (sources.graph) parts.push("graph");
+  const tag = document.createElement("span");
+  tag.className = "transcript-source";
+  tag.textContent = `· ${parts.join(" + ")}`;
+  tag.title = `This answer used: ${parts.join(", ")}`;
+  head.append(tag);
+}
+
+// The panel prints the brain's markdown verbatim, so the element's text IS
+// the markdown. navigator.clipboard needs a secure context (HTTPS); the
+// selection fallback covers plain-HTTP access.
+async function copyEntryText(button, body) {
+  if (button.disabled) return;
+  const text = body._rawMarkdown ?? body.textContent;
+  let ok = false;
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch {
+    ok = false;
+  }
+  if (!ok) ok = legacyClipboardCopy(text);
+  button.disabled = true;
+  button.textContent = ok ? "Copied" : "Copy failed";
+  setTimeout(() => {
+    button.textContent = "Copy";
+    button.disabled = false;
+  }, 1500);
+}
+
+function legacyClipboardCopy(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+function scrollTranscripts() {
+  el.conversationText.scrollTop = el.conversationText.scrollHeight;
+}
+
+// Opencode-style one-cell thinking indicator: a single glyph whose lit
+// quadrants orbit the cell clockwise like a small comet (a one-quadrant
+// head with a one-quadrant trail, shedding it for one frame each orbit).
+// Classic block glyphs only, so every browser font renders them; the CSS
+// pins a monospace face so the advance width never jitters between frames.
+// The orbit starts at THINKING_STEP_MS per step and eases to
+// THINKING_SLOW_MS over the following 30 s, so a long think calms down
+// instead of fluttering the whole time.
+const THINKING_FRAMES = ["\u2596", "\u2580", "\u2590", "\u2584", "\u258c"];
+const THINKING_LEVELS = [1, 0.8, 1, 0.8, 1];
+const THINKING_STEP_MS = 70;
+const THINKING_SLOW_MS = 95;
+const THINKING_SLOW_AFTER_MS = 30000;
+const THINKING_SLOW_DURATION_MS = 30000;
+
+function createThinkingChar(span) {
+  span.textContent = THINKING_FRAMES[0];
+  // Reduced motion: a static quadrant still marks the pending entry, it just
+  // does not orbit.
+  if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return () => {};
+  let index = 0;
+  let timer = 0;
+  let stopped = false;
+  const startedAt = Date.now();
+  const step = () => {
+    if (stopped) return;
+    index = (index + 1) % THINKING_FRAMES.length;
+    span.textContent = THINKING_FRAMES[index];
+    span.style.opacity = THINKING_LEVELS[index];
+    const elapsed = Date.now() - startedAt;
+    const t = Math.min(1, Math.max(0, (elapsed - THINKING_SLOW_AFTER_MS) / THINKING_SLOW_DURATION_MS));
+    timer = setTimeout(step, THINKING_STEP_MS + (THINKING_SLOW_MS - THINKING_STEP_MS) * t);
+  };
+  timer = setTimeout(step, THINKING_STEP_MS);
+  return () => { stopped = true; clearTimeout(timer); };
+}
+
+// Stops the orbiting chars and clears them from a pending entry. Called on
+// every path that leaves the entry the panel (complete, fail, voice cut),
+// so no timer keeps running against a detached element.
+function disposeThinkingChars(pending) {
+  for (const stop of pending._thinkingStops ?? []) stop();
+  pending._thinkingStops = null;
+  for (const char of pending.querySelectorAll(".thinking-char")) char.remove();
+}
+
+function beginTurn(prompt) {
+  for (const empty of el.conversationText.querySelectorAll(".transcript-empty")) empty.remove();
+  const ts = Date.now();
+  el.conversationText.append(transcriptEntry(prompt, ts, "prompt"));
+  const pending = transcriptEntry("", ts, "answer");
+  const body = pending.querySelector(".transcript-body");
+  body.classList.add("pending");
+  const char = document.createElement("span");
+  char.className = "thinking-char";
+  body.append(char);
+  const headChar = document.createElement("span");
+  headChar.className = "thinking-char thinking-char-head";
+  pending.querySelector(".transcript-time").append(headChar);
+  pending._thinkingStops = [createThinkingChar(char), createThinkingChar(headChar)];
+  el.conversationText.append(pending);
+  scrollTranscripts();
+  return pending;
+}
+
+function completeTurn(pending, answer, sources) {
+  disposeThinkingChars(pending);
+  const body = pending.querySelector(".transcript-body");
+  body.classList.remove("pending");
+  body._rawMarkdown = answer;
+  body.innerHTML = renderMarkdown(answer);
+  appendSourceTag(pending.querySelector(".transcript-head"), "answer", sources);
+  scrollTranscripts();
+}
+
+function failTurn(pending, message) {
+  disposeThinkingChars(pending);
+  const body = pending.querySelector(".transcript-body");
+  body.classList.remove("pending");
+  body._rawMarkdown = `Failed: ${message}`;
+  body.textContent = `Failed: ${message}`;
+  scrollTranscripts();
+}
+
+// Fire-and-forget: the backend stores the turn under the signed-in user, so
+// the panels can show it after a reload; a failed post never blocks the
+// pipeline (the turn already happened).
+function recordTurn(prompt, answer, sources) {
+  fetch("/api/conversation", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, answer, sources: Array.isArray(sources) ? sources.slice(0, 8) : null }),
+    signal: AbortSignal.timeout(10000),
+    cache: "no-store",
+  }).catch(() => {});
+}
+
+async function loadConversationHistory() {
+  try {
+    const response = await fetch(`/api/conversation?days=${historyDays}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (!response.ok) return;
+    const data = await response.json();
+    el.conversationText.replaceChildren();
+    const entries = data.entries || [];
+    promptHistory.length = 0;
+    promptHistoryIndex = null;
+    for (const entry of entries) rememberPrompt(entry.prompt);
+    for (const entry of entries) {
+      const ts = Date.parse(entry.ts) || Date.now();
+      el.conversationText.append(transcriptEntry(entry.prompt, ts, "prompt"));
+      el.conversationText.append(transcriptEntry(entry.answer, ts, "answer",
+        Array.isArray(entry.sources) && entry.sources.length ? { websearch: true, websearchSources: entry.sources } : null));
+    }
+    if (!entries.length) {
+      const empty = document.createElement("p");
+      empty.className = "transcript-empty";
+      empty.textContent = "No conversation yet.";
+      el.conversationText.append(empty);
+    }
+    scrollTranscripts();
+  } catch {
+    // History is a convenience; a failed load leaves the panels empty.
+  }
+}
+
+// A short butler line voiced over the brain call so the wait is heard, not
+// silent. It reuses the normal speech path (Stop button, engine selection and
+// the voice wake-watch) and is tied to the just-spoken command. It fully
+// finishes before the brain request, so it never overlaps the answer's own
+// speech. A stop word cut into the line ends the turn before the brain runs;
+// a real command spoken over it replaces the pending turn.
+async function speakThinking(session, prompt) {
+  if (!speakEnabled) return false;
+  const phrase = thinkingPhrase(language, prompt);
+  log("tts", `Thinking: ${phrase}`);
+  const speech = new AbortController();
+  session.speech = speech;
+  try {
+    const followUp = await withStepRetries(session, "thinking speech", () => speak(session, phrase, speech));
+    check(session);
+    if (followUp === null) return false;
+    if (typeof followUp === "string" && !followUp.trim()) {
+      log("wake", "Wake phrase heard while the thinking line was spoken; opening the follow-up command window.");
+      session.commandWindowNeedsGreeting = true;
+      return true;
+    }
+    if (isStopCommand(followUp)) {
+      log("tts", `Speech stopped by voice command "${followUp}".`);
+      session.mic.beep();
+      return true;
+    }
+    log("tts", `Thinking line interrupted by voice command: ${JSON.stringify(followUp)}`);
+    await answer(session, followUp);
+    return true;
+  } finally {
+    if (session.speech === speech) session.speech = null;
+  }
+}
+
+async function answer(session, prompt) {
+  check(session);
+  const pending = beginTurn(prompt);
+  let answerShown = false;
+  let brainSpeech = null;
+  let brainWatch = null;
+  stage("thinking", "Thinking", "Waiting for the configured self-hosted brain.", "brain");
+  // A voice cut aborts the in-flight brain call (reason speechStopped), so
+  // it reaches us as an AbortError — or as a response that lost the race
+  // against the cut. Stop-button clicks abort session.signal instead, so a
+  // cut here is always the user's voice.
+  const handleBrainCut = async () => {
+    const followUp = brainWatch.command;
+    mark("brain", "skipped");
+    disposeThinkingChars(pending);
+    pending.remove();
+    if (typeof followUp === "string" && !followUp.trim()) {
+      log("wake", "Wake phrase heard while the brain was working; opening the follow-up command window.");
+      session.commandWindowNeedsGreeting = true;
+      return;
+    }
+    if (isStopCommand(followUp)) {
+      log("tts", `Brain stopped by voice command "${followUp}" before the answer arrived.`);
+      session.mic.beep();
+      return;
+    }
+    log("tts", `Brain interrupted by voice command: ${JSON.stringify(followUp)}`);
+    await answer(session, followUp);
+  };
+  try {
+    // true = the thinking line was cut by voice (stop or replacement command)
+    // or the turn was already answered in its place: skip the brain request
+    // and drop the pending entry, because no answer was ever produced.
+    if (await speakThinking(session, prompt)) {
+      disposeThinkingChars(pending);
+      pending.remove();
+      return;
+    }
+    // Nothing is spoken while the brain works, but the same voice watch that
+    // guards the utterance guards the in-flight request: a stop word cancels
+    // it before the answer arrives, and wake word + new command replaces the
+    // pending turn. The mic keeps capturing, so the watch has audio and
+    // paces itself exactly like the wake loop.
+    brainSpeech = new AbortController();
+    brainWatch = watchForVoiceCommand(session, AbortSignal.any([session.signal, brainSpeech.signal]), brainSpeech, "brain");
+    let result;
+    try {
+      result = await withStepRetries(session, "brain", async () => {
+        const data = await request(session, "/api/chat", {
+          method: "POST", headers: { "content-type": "application/json" },
+          // The brain answers as the wake word's name, so the active phrase
+          // (server default or personal override) travels with every request.
+          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings }),
+          signal: brainSpeech.signal,
+        });
+        if (!data.answer) throw new Error("Brain returned no answer");
+        return data;
+      });
+    } finally {
+      brainWatch.stop();
+    }
+    if (brainSpeech.signal.aborted) {
+      // The cut won the race against an already-arrived response: honour it
+      // and discard the answer instead of speaking it.
+      await handleBrainCut();
+      return;
+    }
+    log("brain", `Request ${result.requestId} completed`);
+    mark("brain", "done");
+    completeTurn(pending, result.answer, result.sources);
+    answerShown = true;
+    recordTurn(prompt, result.answer, result.sources?.websearchSources);
+    // Ingestion of this turn runs server-side after the response; give it a
+    // moment, then refresh the graph panel so the new facts show up.
+    if (mcpFlags.graph) setTimeout(() => loadGraph(), 4000);
+    await speakAnswer(session, result.answer);
+  } catch (error) {
+    if (brainSpeech?.signal.aborted) {
+      await handleBrainCut();
+      return;
+    }
+    if (!answerShown) failTurn(pending, error.message);
+    throw error;
+  }
+}
+
+// The spoken part of a turn, shared by brain answers and the butler
+// closings: the TTS stage, the stop/interruption watch and the retryable
+// speech output, all on the normal TTS path.
+async function speakAnswer(session, text) {
+  if (!speakEnabled) {
+    mark("tts", "skipped");
+    log("tts", "Voice output is switched off; the answer stays text only.");
+    return;
+  }
+  stage("speaking", "Speaking", `${voiceProfiles[voiceId].label} is reading the answer at ${voiceSpeed.toFixed(2)}x.`, "tts");
+  // The controller (not just its signal) goes to speak(): the speech watch
+  // needs it to abort the speech with `speechStopped` mid-answer.
+  const speech = new AbortController();
+  session.speech = speech;
+  try {
+    const followUp = await withStepRetries(session, "speech output", () => speak(session, text, speech));
+    check(session);
+    if (followUp === null) {
+      mark("tts", "done");
+      return;
+    }
+    if (typeof followUp === "string" && !followUp.trim()) {
+      log("wake", "Wake phrase heard while speaking; opening the follow-up command window.");
+      mark("tts", "skipped");
+      session.commandWindowNeedsGreeting = true;
+      return;
+    }
+    // The user interrupted the speech by voice (wake word + command).
+    if (isStopCommand(followUp)) {
+      log("tts", `Speech stopped by voice command "${followUp}".`);
+      mark("tts", "skipped");
+      session.mic.beep();
+      return;
+    }
+    log("tts", `Speech interrupted by voice command: ${JSON.stringify(followUp)}`);
+    mark("tts", "skipped");
+    await answer(session, followUp);
+    return;
+  } finally {
+    session.speech = null;
+  }
+}
+
+// An acknowledgment ("ok", "thank you", …) has nothing for the brain to
+// answer: pick a polite butler closing in the active language and speak it
+// on the normal TTS path (stop and interruption included). The brain step is
+// marked skipped and no brain request or graph ingestion happens.
+async function acknowledge(session, prompt) {
+  check(session);
+  const pending = beginTurn(prompt);
+  // The prompt may be a full transcript whose last phrase is the
+  // acknowledgment (echo-merged window), so the trailing match resolves the
+  // kind when the full command is not one on its own.
+  const kind = acknowledgmentKind(prompt) ?? acknowledgmentIn(prompt, { trailing: true }) ?? "general";
+  const closing = pickClosing(language, kind);
+  log("brain", `Acknowledgment "${prompt}"; the brain is skipped — a polite closing is spoken instead.`);
+  mark("brain", "skipped");
+  completeTurn(pending, closing);
+  // Butler closings are conversation too: the panels (and the 24-day backend
+  // history) keep them next to the brain's answers.
+  recordTurn(prompt, closing);
+  await speakAnswer(session, closing);
+}
+
+async function speak(session, text, speech) {
+  const signal = AbortSignal.any([session.signal, speech.signal]);
+  const watch = watchForVoiceCommand(session, signal, speech);
+  try {
+    return await speakText(session, text, signal, watch);
+  } finally {
+    watch.stop();
+    // Timestamps the end of the spoken answer (natural or cut) so the wake
+    // pipeline can still treat a following "stop" command as a speech stop.
+    session.lastSpeechEndedAt = performance.now();
+  }
+}
+
+// The voice playback itself, shared by answers (speak) and the command
+// window's spoken greeting (announceCommandWindow, without a speech watch).
+// Returns the interrupting command when the speech was cut by voice, else
+// null.
+async function speakText(session, text, signal, watch = null) {
+  const profile = voiceProfiles[voiceId];
+  const useEleven = voiceProvider === "elevenlabs" && isElevenlabsConfigured();
+  const voiceLabel = useEleven ? selectedElevenVoiceLabel() : profile.label;
+  // The printed answer stays verbatim; only the speaker gets plain language
+  // without special signs.
+  const spoken = textForSpeech(text);
+  try {
+    if (language === "de" && !useEleven) {
+      // The self-hosted engine (Kokoro) has no German voices, so German is
+      // spoken by the browser voice in the selected profile's cadence.
+      log("tts", `German selected: the self-hosted TTS engine is English-only; ${profile.label} falls back to the browser voice.`);
+      await speakWithSynthesis(session, splitForSpeech(spoken, profile.chunkChars), profile, signal);
+      return null;
+    }
+    if (useEleven || (profile.neural && config.ttsConfigured)) {
+      const currentElevenVoiceId = useEleven
+        ? String(activeElevenVoiceId() || session?.elevenVoiceId || config?.elevenlabsVoiceId || "").trim().slice(0, 64)
+        : "";
+      if (useEleven) {
+        if (currentElevenVoiceId) {
+          session.elevenVoiceId = currentElevenVoiceId;
+          if (currentElevenVoiceId !== elevenVoiceId) elevenVoiceId = currentElevenVoiceId;
+        } else if (config?.elevenlabsVoiceId) {
+          session.elevenVoiceId = String(config.elevenlabsVoiceId).trim().slice(0, 64);
+        }
+        log("tts", "ElevenLabs voice selection", {
+          selectedVoiceId: currentElevenVoiceId || "(unset)",
+          configuredVoiceId: String(config?.elevenlabsVoiceId || "").trim() || "(unset)",
+        });
+      }
+      const makeRequestExtras = (overrideVoiceId = "") => useEleven
+        ? {
+          provider: "elevenlabs",
+          elevenVoiceId: String(overrideVoiceId || currentElevenVoiceId || config?.elevenlabsVoiceId || "").trim(),
+          elevenModelId: config?.elevenlabsModelId || "",
+        }
+        : null;
+      const selectedVoiceId = String(currentElevenVoiceId || config?.elevenlabsVoiceId || "").trim();
+      const fallbackVoiceId = String(config?.elevenlabsVoiceId || "").trim();
+      const voice = new NeuralVoice(signal, profile, {
+        dryChain: useEleven,
+        requestExtras: makeRequestExtras(selectedVoiceId),
+      });
+      session.voice = voice;
+      try {
+        await voice.speak(spoken, {
+          speed: scaledRate(profile.speed, voiceSpeed),
+          onChunk: (chunk, index, total) => log("tts", `${voiceLabel} clause ${index + 1}/${total}`, { chars: chunk.length }),
+        });
+        return null;
+      } catch (error) {
+        if (!(error instanceof VoiceError)) throw error;
+        if (useEleven) {
+          if (fallbackVoiceId && fallbackVoiceId !== selectedVoiceId) {
+            log("tts", `ElevenLabs selected voice ${selectedVoiceId} failed; configured fallback ${fallbackVoiceId} is intentionally disabled to preserve explicit selection.`, { message: error.message });
+          }
+          throw new Error(`ElevenLabs voice synthesis failed (${selectedVoiceId || "unset"}): ${error.message}`);
+        }
+        // error.remaining is already split from the sanitized spoken text.
+        log("tts", "Self-hosted TTS failed; finishing the answer with the browser voice.", { message: error.message });
+        await speakWithSynthesis(session, error.remaining, profile, signal);
+        return null;
+      } finally {
+        voice.close();
+        session.voice = null;
+      }
+    }
+    if (profile.neural) log("tts", `No TTS backend configured; using the browser voice at ${profile.label} cadence.`);
+    await speakWithSynthesis(session, splitForSpeech(spoken, profile.chunkChars), profile, signal);
+    return null;
+  } catch (error) {
+    if (error === speechStopped) return watch?.command ?? null;
+    throw error;
+  }
+}
+
+// Parallel wake watch for the duration of the speech: like the wake probes it
+// fires on the trailing edge of mic voice (350 ms of silence) and, when voice
+// never settles (speaker echo plus the user talking), on the 3 s forced speech
+// cap. It transcribes the window and, if the wake phrase is in there with a
+// non-empty command after it, aborts the speech with `speechStopped` and keeps
+// the command. A stop word heard the same way — exact over the window, or
+// contained in the echoed transcript when the window's audio carries a loud
+// user burst — cuts the speech instead. Probe failures are swallowed: a bad
+// probe must not kill the answer. Every probe's transcript lands in the Live
+// log, so a stop that does not trigger is debuggable from the page alone.
+// `speech` is the per-answer AbortController (answer()), so the watch can
+// abort it with the speechStopped reason; its signal feeds the composite.
+// `phase` only shapes the log wording: "speaking" (the default, the answer's
+// utterance) or "brain" (the in-flight, silent brain request that answer()
+// guards with the same watch so a command can still be corrected or cancelled
+// before the answer arrives).
+function watchForVoiceCommand(session, signal, speech, phase = "speaking") {
+  const whilePhase = phase === "brain" ? "while the brain is working" : "while speaking";
+  const probeLabel = phase === "brain" ? "Brain watch probe" : "Speech watch probe";
+  let command = null;
+  let watching = true;
+  // The manual-prompt flow has no microphone, so the watch is a no-op there.
+  let probedThrough = session.mic ? session.mic.buffer.end : 0;
+  let speechFrom = null;
+  const runner = (async () => {
+    if (!session.mic) return;
+    while (watching && !signal.aborted) {
+      // Audio-clocked like the wake loop, so a spoken "stop" is still caught
+      // promptly while the window is minimized.
+      await session.mic.tick(150, signal).catch(() => {});
+      if (!watching || signal.aborted) return;
+      const buffer = session.mic.buffer;
+      if (buffer.lastVoice <= probedThrough) continue;
+      speechFrom ??= buffer.lastVoice;
+      const settled = (buffer.end - buffer.lastVoice) / buffer.sampleRate * 1000 >= 350;
+      const forced = !settled && buffer.end - speechFrom >= buffer.sampleRate * 3;
+      if (!settled && !forced) continue;
+      probedThrough = buffer.end;
+      speechFrom = null;
+      // Settled probes overlap the previous window by 2 s so a phrase crossing
+      // the boundary is not lost; a forced probe covers everything since the
+      // last probe, so a short stop command cannot fall into the gap.
+      const start = settled
+        ? Math.max(probedThrough - buffer.sampleRate * 2, buffer.end - buffer.sampleRate * 15)
+        : Math.max(probedThrough, buffer.end - buffer.sampleRate * 15);
+      try {
+        const blob = buffer.wav(start);
+        const result = await request(session, `/api/transcribe?language=${language}&whisperProfile=${encodeURIComponent(whisperProfileId)}`, {
+          method: "POST", headers: { "content-type": blob.type }, body: blob, signal,
+        });
+        const text = result.text || "";
+        const detected = wakeCommand(text, config.wakePhrase);
+        if (detected !== null) {
+          const wakeCommandText = detected.trim();
+          // During spoken output, a bare wake phrase should also cut the
+          // speech and open the fast follow-up command window.
+          if (wakeCommandText || phase === "speaking") {
+            command = wakeCommandText;
+            log("wake", `Wake phrase heard ${whilePhase}: ${JSON.stringify(text)}`);
+            speech.abort(speechStopped);
+            return;
+          }
+        }
+        // A stop word, without the wake phrase, also cuts the speech: the
+        // escape hatch for answers that run too long. The exact whole-window
+        // match covers the quiet case; with speaker echo the window
+        // transcribes as the answer's own words plus the stop word, so a loud
+        // user burst in the window's audio unlocks the containment match —
+        // and keeps a pure-echo window from self-triggering on an answer that
+        // merely ends on a stop word.
+        const userBurst = hasLoudBurst(buffer.samples, start, buffer.end, buffer.sampleRate);
+        const stopText = isStopCommand(text) ? text.trim() : userBurst ? stopCommandIn(text) : null;
+        if (stopText) {
+          command = stopText;
+          log("wake", `Stop word heard ${whilePhase}: ${JSON.stringify(text)}`);
+          speech.abort(speechStopped);
+          return;
+        }
+        log("wake", `${probeLabel}: ${JSON.stringify(text)}`);
+      } catch (error) {
+        if (error === speechStopped || signal.aborted) return;
+      }
+    }
+  })();
+  runner.catch(() => {});
+  return { stop: () => { watching = false; }, get command() { return command; } };
+}
+
+async function speakWithSynthesis(session, chunks, baseProfile, signal) {
+  const profile = { ...baseProfile, rate: scaledRate(baseProfile.rate, voiceSpeed) };
+  const voice = language === "de"
+    ? pickGermanSynthesisVoice(speechSynthesis.getVoices(), profile.gender)
+    : (profile.voiceHints ? pickSynthesisVoice(speechSynthesis.getVoices(), profile) : null);
+  if (voice) log("tts", `Browser voice selected: ${voice.name} (${voice.lang})`);
+  for (const [index, chunk] of chunks.entries()) {
+    await utter(session, chunk, profile, voice, signal);
+    if (profile.pauseMs && index < chunks.length - 1) await delay(profile.pauseMs, signal);
+  }
+}
+
+function utter(session, text, profile, voice, signal) {
+  return new Promise((resolve, reject) => {
+    check(session);
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = voice?.lang || language || navigator.language;
+    utterance.rate = profile.rate;
+    utterance.pitch = profile.pitch;
+    if (voice) utterance.voice = voice;
+    let finished = false;
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", cancelled);
+      utterance.onend = utterance.onerror = null;
+      if (error) speechSynthesis.cancel();
+      if (error) reject(error);
+      else resolve();
+    };
+    const cancelled = () => finish(signal.reason);
+    const timer = setTimeout(() => finish(new Error("Speech output timed out; audio was cancelled.")),
+      Math.min(90000, Math.max(5000, text.length * 100 / profile.rate + 3000)));
+    signal.addEventListener("abort", cancelled, { once: true });
+    utterance.onend = () => finish();
+    utterance.onerror = (event) => finish(new Error(`Speech output failed: ${event.error}`));
+    try {
+      speechSynthesis.cancel();
+      speechSynthesis.resume();
+      speechSynthesis.speak(utterance);
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
+function fatal(session, error) {
+  if (session !== current || session.signal.aborted) return;
+  stop();
+  stage("error", "Stopped after error", error.message);
+  log("error", error.stack || error.message);
+}
+
+// Arms Jarvis (opens the microphone, unlocks the browser voice, starts wake
+// listening). Shared by the Arm button, the hero enable switch and the
+// endpoint-change restart, so all three stay on exactly one code path.
+async function armJarvis() {
+  if (!config) return;
+  const session = newSession();
+  stage("prompting", "Opening microphone", "Allow microphone access. You can minimize the window once armed.");
+  try {
+    session.mic = new Microphone(session.signal);
+    const unlock = new SpeechSynthesisUtterance("");
+    speechSynthesis.speak(unlock);
+    await session.mic.start();
+    check(session);
+    startMeters();
+    await listen(session);
+  } catch (error) {
+    fatal(session, error);
+  }
+}
+el.armButton.addEventListener("click", () => armJarvis());
+el.stopButton.addEventListener("click", () => stop());
+// The hero's enable/disable toggle: the second face of Arm/Stop. Disabling
+// while armed runs the normal stop path; enabling runs the normal arm path
+// (mic unlock, wake listening, error handling all stay in one place).
+el.enableSwitch.addEventListener("click", () => {
+  if (!config) return;
+  if (current) {
+    stop();
+    return;
+  }
+  el.armButton.click();
+});
+
+// Alt+J toggles the armed pipeline (arm wake listening / disarm), the keyboard
+// face of the hero's enable switch. Uses the physical key code so it is
+// layout-independent, and is ignored while typing in a text field so it never
+// fights the manual-prompt or settings inputs.
+window.addEventListener("keydown", (event) => {
+  if (!event.altKey || event.code !== "KeyJ") return;
+  const target = event.target;
+  if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+  if (!config) return;
+  event.preventDefault();
+  if (current) stop();
+  else armJarvis();
+});
+
+// Direct prompt input in the Conversation panel: same flow as the old manual prompt
+// dialog, available only while disarmed.
+el.manualPromptForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const prompt = el.manualPrompt.value.trim();
+  if (!prompt || current) return;
+  rememberPrompt(prompt);
+  el.manualPrompt.value = "";
+  const session = newSession();
+  for (const name of ["wake", "record", "vad", "whisper"]) mark(name, "skipped");
+  try {
+    await answer(session, prompt);
+    check(session);
+    stop("Manual prompt complete. Click Arm Jarvis for voice mode.");
+  } catch (error) {
+    fatal(session, error);
+  }
+});
+// Typing takes the microphone away: clicking or tapping into the prompt box
+// while Jarvis is merely wake listening disarms it, which releases the
+// microphone and enables Send (typing a prompt only works while disarmed).
+// Deliberately narrow: `pointerdown` (not `focus`) so tabbing through the
+// page cannot disarm, and only while `wakeIdle` — a command being recorded,
+// transcribed, answered or spoken is never cut off, and the turn is not
+// lost. Re-arming stays manual: focus must never re-open the microphone.
+el.manualPrompt.addEventListener("pointerdown", () => {
+  if (!current || !wakeIdle) return;
+  log("session", "Prompt box focused while wake listening; disarming and releasing the microphone.");
+  stop("Disarmed because you started typing. Click Arm Jarvis for voice mode.");
+});
+// Ctrl+Enter (Cmd+Enter on macOS) in the prompt box presses Send. Plain
+// Enter keeps inserting a newline. requestSubmit() runs the same submit
+// handler as a click, and a disabled Send (armed, or config not loaded)
+// blocks it the same way.
+el.manualPrompt.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+  event.preventDefault();
+  if (!el.sendManualButton.disabled) el.manualPromptForm.requestSubmit(el.sendManualButton);
+});
+// Prompt history for the manual prompt box: ArrowUp walks to older prompts,
+// ArrowDown back to the text that was in the box when the walk started. The
+// list is the conversation history (newest last, refreshed with the History
+// slider) plus anything sent from this box. The caret stays at the end of
+// the recalled text.
+const promptHistory = [];
+let promptHistoryIndex = null;
+let promptHistoryCurrent = "";
+function rememberPrompt(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  if (promptHistory[promptHistory.length - 1] === trimmed) return;
+  promptHistory.push(trimmed);
+  if (promptHistory.length > 100) promptHistory.shift();
+}
+function recallPromptHistory(value) {
+  if (el.manualPrompt.value !== value) {
+    el.manualPrompt.value = value;
+    el.manualPrompt.setSelectionRange(value.length, value.length);
+  }
+}
+el.manualPrompt.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  if (!promptHistory.length) return;
+  event.preventDefault();
+  if (promptHistoryIndex === null) {
+    if (event.key === "ArrowDown") return;
+    promptHistoryCurrent = el.manualPrompt.value;
+    promptHistoryIndex = promptHistory.length;
+  }
+  if (event.key === "ArrowUp") {
+    if (promptHistoryIndex > 0) promptHistoryIndex -= 1;
+  } else {
+    if (promptHistoryIndex < promptHistory.length) promptHistoryIndex += 1;
+    if (promptHistoryIndex >= promptHistory.length) {
+      promptHistoryIndex = null;
+      recallPromptHistory(promptHistoryCurrent);
+      return;
+    }
+  }
+  recallPromptHistory(promptHistory[promptHistoryIndex]);
+});
+el.clearLogButton.addEventListener("click", () => { el.log.textContent = ""; });
+el.voiceSpeed.addEventListener("input", () => {
+  voiceSpeed = normalizeVoiceSpeed(el.voiceSpeed.value);
+  el.voiceSpeedValue.textContent = `${voiceSpeed.toFixed(2)}x`;
+});
+el.voiceSpeed.addEventListener("change", () => {
+  applyVoiceSpeed(el.voiceSpeed.value, true);
+});
+el.voiceForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!config) return;
+  if (voiceProvider === "elevenlabs" && isElevenlabsConfigured()) {
+    applyElevenVoice(el.voiceSelect.value, true);
+  } else {
+    applyVoice(el.voiceSelect.value, true);
+  }
+});
+el.voiceSelect.addEventListener("change", () => {
+  if (!config || el.voiceSelect.disabled) return;
+  if (voiceProvider === "elevenlabs" && isElevenlabsConfigured()) {
+    applyElevenVoice(el.voiceSelect.value, true);
+  } else {
+    applyVoice(el.voiceSelect.value, true);
+  }
+});
+el.wakeWordInput.addEventListener("input", () => el.wakeWordInput.setCustomValidity(""));
+el.wakeWordForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!config) return;
+  let phrase;
+  try {
+    phrase = normalizeWakePhrase(el.wakeWordInput.value);
+  } catch (error) {
+    el.wakeWordInput.setCustomValidity(error.message);
+    el.wakeWordInput.reportValidity();
+    el.wakeWordStatus.textContent = `Wake word unchanged. ${error.message}`;
+    return;
+  }
+  stop(`Wake word changed to "${phrase}". Click Arm Jarvis to listen.`);
+  config.wakePhrase = phrase;
+  el.wakeWordInput.value = phrase;
+  try {
+    localStorage.setItem(wakeWordStorageKey, phrase);
+    el.wakeWordStatus.textContent = `Saved for this browser: "${phrase}". Click Arm Jarvis to use it.`;
+  } catch (error) {
+    el.wakeWordStatus.textContent = `Using "${phrase}" for this tab only; browser storage is unavailable.`;
+    log("settings", "Could not save wake word", { message: error.message });
+  }
+  log("settings", `Active wake word: ${JSON.stringify(phrase)}. Previous session stopped.`);
+});
+function applyVoiceSpeed(value, persist) {
+  voiceSpeed = normalizeVoiceSpeed(value);
+  el.voiceSpeed.value = String(voiceSpeed);
+  el.voiceSpeedValue.textContent = `${voiceSpeed.toFixed(2)}x`;
+  const profile = voiceProfiles[voiceId];
+  const usingEleven = voiceProvider === "elevenlabs" && isElevenlabsConfigured();
+  const effective = usingEleven
+    ? `provider speed ${voiceSpeed.toFixed(2)}x`
+    : profile.neural && config.ttsConfigured
+      ? `engine speed ${scaledRate(profile.speed, voiceSpeed)}`
+      : `utterance rate ${scaledRate(profile.rate, voiceSpeed)}`;
+  const label = usingEleven ? selectedElevenVoiceLabel() : profile.label;
+  el.voiceStatus.textContent = `Voice: ${label} at ${voiceSpeed.toFixed(2)}x (${effective}). Applies to the next answer.`;
+  if (!persist) return;
+  try {
+    localStorage.setItem(voiceSpeedStorageKey, String(voiceSpeed));
+  } catch (error) {
+    el.voiceStatus.textContent = `Speed ${voiceSpeed.toFixed(2)}x for this tab only; browser storage is unavailable.`;
+    log("settings", "Could not save speaking speed", { message: error.message });
+  }
+  log("settings", `Speaking speed ${voiceSpeed.toFixed(2)}x`);
+}
+
+function applyElevenVoice(value, persist) {
+  const id = String(value || "").trim().slice(0, 64) || config?.elevenlabsVoiceId || "";
+  if (!id) {
+    el.voiceStatus.textContent = "No ElevenLabs voice is configured.";
+    return;
+  }
+  elevenVoiceId = id;
+  if (current) current.elevenVoiceId = id;
+  if (voiceProvider === "elevenlabs") el.voiceSelect.value = id;
+  const label = selectedElevenVoiceLabel();
+  el.voiceStatus.textContent = `Voice: ${label}. ElevenLabs voice ${id} via ${config?.elevenlabsModelId || "configured model"}. Applies to the next answer.`;
+  if (!persist) return;
+  try {
+    localStorage.setItem(elevenVoiceStorageKey, id);
+  } catch (error) {
+    log("settings", "Could not save ElevenLabs voice", { message: error.message });
+  }
+}
+
+function applyVoice(value, persist) {
+  let id;
+  try {
+    id = normalizeVoiceId(value);
+  } catch (error) {
+    el.voiceStatus.textContent = `Voice unchanged. ${error.message}`;
+    log("settings", "Could not apply voice", { message: error.message });
+    return;
+  }
+  voiceId = id;
+  if (voiceProvider !== "elevenlabs") el.voiceSelect.value = id;
+  const profile = voiceProfiles[id];
+  const usingEleven = voiceProvider === "elevenlabs" && isElevenlabsConfigured();
+  const detail = usingEleven
+    ? `ElevenLabs voice ${config?.elevenlabsVoiceId || "default"} via ${config?.elevenlabsModelId || "configured model"}.`
+    : !profile.neural ? "Plain browser speech synthesis."
+      : config.ttsConfigured ? `Self-hosted TTS: ${config.ttsModel} / ${profile.ttsVoice || config.ttsVoice}, shaped in the browser.`
+        : "No TTS backend configured, so a matching browser voice is used at the profile's cadence only.";
+  el.voiceStatus.textContent = `Voice: ${profile.label}. ${detail} Applies to the next answer.`;
+  if (!persist) return;
+  try {
+    localStorage.setItem(voiceStorageKey, id);
+  } catch (error) {
+    el.voiceStatus.textContent = `Voice: ${profile.label} for this tab only; browser storage is unavailable.`;
+    log("settings", "Could not save voice", { message: error.message });
+  }
+}
+
+// --- Multi-user login -------------------------------------------------------
+// The backend gates every /api route on an HttpOnly session cookie. A 403 on
+// /api/config means "not signed in", so the login panel takes over the shell
+// (the backend answers 403, not 401, so the browser does not mistake it for a
+// rejection of the gateway's Basic Auth credentials).
+// Each user's prompt history is keyed by their account on the server, so
+// Mila and Roman never share a conversation. The hint reflects the
+// deployment's convention (legacy password-is-name vs explicit per-user
+// passwords) as the backend reports it in the 403 body.
+let loginHintText = "The password is your username.";
+function showLogin(message) {
+  authedUser = null;
+  document.body.classList.remove("authenticated");
+  el.loginPanel.hidden = false;
+  el.loginStatus.classList.remove("error");
+  el.loginStatus.textContent = message || loginHintText;
+  el.userLine.textContent = "";
+  stop("Signed out.");
+  stage("standby", "Sign in", "Enter your name and password to open your shell.");
+}
+
+el.loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = el.loginUsername.value.trim();
+  const password = el.loginPassword.value;
+  if (!username || !password) return;
+  el.loginButton.disabled = true;
+  el.loginStatus.classList.remove("error");
+  el.loginStatus.textContent = "Signing in...";
+  let response;
+  try {
+    response = await fetch("/api/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }), cache: "no-store",
+    });
+  } catch (error) {
+    el.loginStatus.classList.add("error");
+    el.loginStatus.textContent = `Could not reach the server: ${error.message}`;
+    el.loginButton.disabled = false;
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    el.loginStatus.classList.add("error");
+    el.loginStatus.textContent = response.status === 429
+      ? "Too many failed attempts; wait a moment and try again."
+      : "Wrong username or password.";
+    el.loginPassword.value = "";
+    el.loginButton.disabled = false;
+    return;
+  }
+  el.loginPassword.value = "";
+  el.loginButton.disabled = false;
+  await loadConfig(data.user);
+});
+
+el.signOutButton.addEventListener("click", async () => {
+  try {
+    await fetch("/api/logout", { method: "POST", cache: "no-store" });
+  } catch {
+    // Local sign-out still applies; the session just stays valid server-side.
+  }
+  stopCostsPolling();
+  el.costsPanel.hidden = true;
+  log("session", "Signed out.");
+  showLogin();
+});
+
+// Minimizing the window or switching tab must not disarm Jarvis: the whole
+// point of a wake word is that it is heard while you are doing something else.
+// An armed session therefore survives going hidden — capture, wake probes and
+// speech all continue, and the pipeline loop is clocked off the audio thread
+// (see Microphone.tick) so background timer throttling cannot slow it down.
+// Only Stop, an error or leaving the page releases the microphone. The browser
+// keeps showing its recording indicator throughout, so the mic is never live
+// without the user being able to see it.
+document.addEventListener("visibilitychange", () => {
+  if (!current) return;
+  if (document.hidden) {
+    log("session", "Window hidden; still armed and listening for the wake word.");
+    return;
+  }
+  // Some browsers suspend the audio graph across a minimize; nudge it back so
+  // the first probe after returning is not cut short.
+  current.mic?.context.resume().catch(() => {});
+  log("session", "Window visible again; still armed.");
+});
+window.addEventListener("pagehide", () => stop());
+el.armButton.disabled = el.sendManualButton.disabled = true;
+el.enableSwitch.disabled = true;
+for (const button of previewButtons) button.disabled = true;
+el.languageSwitch.disabled = true;
+el.mcpMasterSwitch.disabled = true;
+el.speakSwitch.disabled = true;
+el.aiProfileSelect.disabled = true;
+el.whisperProfileSelect.disabled = true;
+// The built-in selector is grouped Basic / Character / Female / Male so a
+// male or female voice is a two-level choice; the stored value is still the
+// flat profile id.
+const voiceGroups = [
+  ["basic", "Basic"],
+  ["character", "Character voices"],
+  ["female", "Female voices"],
+  ["male", "Male voices"],
+];
+
+function renderBuiltinVoiceOptions() {
+  el.voiceSelect.replaceChildren(...voiceGroups.map(([group, label]) => {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = label;
+    for (const profile of Object.values(voiceProfiles)) {
+      if (profile.group !== group) continue;
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = profile.label;
+      optgroup.append(option);
+    }
+    return optgroup;
+  }));
+}
+
+function elevenVoiceLabel(voice) {
+  const language = voice?.language ? ` · ${voice.language}` : "";
+  return `${voice?.name || voice?.id || "ElevenLabs voice"}${language}`;
+}
+
+function selectedElevenVoiceLabel() {
+  if (!isElevenlabsConfigured()) return "ElevenLabs";
+  const id = elevenVoiceId || config?.elevenlabsVoiceId || "";
+  const voice = elevenVoiceChoices.find((entry) => entry.id === id);
+  return voice ? elevenVoiceLabel(voice) : "ElevenLabs";
+}
+
+function hasElevenVoiceOption(id) {
+  const target = String(id || "").trim();
+  if (!target) return false;
+  return Array.from(el.voiceSelect.options).some((option) => option.value === target);
+}
+
+function activeElevenVoiceId() {
+  const runtime = String(elevenVoiceId || "").trim();
+  if (runtime) return runtime.slice(0, 64);
+  const uiSelected = voiceProvider === "elevenlabs" ? String(el.voiceSelect?.value || "").trim() : "";
+  if (uiSelected) return uiSelected.slice(0, 64);
+  try {
+    const stored = String(localStorage.getItem(elevenVoiceStorageKey) || "").trim();
+    if (stored) return stored.slice(0, 64);
+  } catch {
+    // Ignore storage read failures; runtime state/config still apply.
+  }
+  return String(elevenVoiceId || config?.elevenlabsVoiceId || "").trim().slice(0, 64);
+}
+
+function renderElevenVoiceOptions() {
+  const options = [];
+  for (const voice of elevenVoiceChoices) {
+    const option = document.createElement("option");
+    option.value = voice.id;
+    option.textContent = elevenVoiceLabel(voice);
+    options.push(option);
+  }
+  const fallbackId = elevenVoiceId || config?.elevenlabsVoiceId || "";
+  if (!options.length && fallbackId) {
+    const option = document.createElement("option");
+    option.value = fallbackId;
+    option.textContent = `Configured voice (${fallbackId})`;
+    options.push(option);
+  }
+  if (!options.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No ElevenLabs voices found";
+    options.push(option);
+  }
+  el.voiceSelect.replaceChildren(...options);
+}
+
+function syncVoiceSelectorOptions() {
+  const usingEleven = voiceProvider === "elevenlabs" && isElevenlabsConfigured();
+  if (usingEleven) {
+    renderElevenVoiceOptions();
+    const selected = String(elevenVoiceId || config?.elevenlabsVoiceId || "").trim();
+    if (selected && hasElevenVoiceOption(selected)) {
+      el.voiceSelect.value = selected;
+      return;
+    }
+    const configured = String(config?.elevenlabsVoiceId || "").trim();
+    const next = hasElevenVoiceOption(configured)
+      ? configured
+      : String(el.voiceSelect.options[0]?.value || "").trim();
+    if (next) applyElevenVoice(next, false);
+    return;
+  }
+  renderBuiltinVoiceOptions();
+  el.voiceSelect.value = voiceId;
+}
+
+renderBuiltinVoiceOptions();
+// --- Cost panel (OpenRouter + OVHcloud + ElevenLabs) ------------------------
+// The backend polls the billing APIs itself (OpenRouter every 5 minutes,
+// OVHcloud hourly, ElevenLabs every 5 minutes) and serves the cached view at
+// GET /api/costs; the panel just re-fetches that view every 60 seconds while
+// the page is visible.
+// A section whose credentials are absent comes back "configured: false" and
+// is hidden; a billing-API outage serves the last good data flagged stale.
+let costsTimer = null;
+let costsTicker = null;
+let costsLastGeneratedAt = null;
+let costsNextAutoAt = null;
+let costsStatusOverride = "";
+const COSTS_REFRESH_MS = 60000;
+const costsEur = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
+
+function renderCostsUpdatedLabel() {
+  if (costsStatusOverride) {
+    el.costsUpdated.textContent = costsStatusOverride;
+    return;
+  }
+  if (!Number.isFinite(costsLastGeneratedAt)) {
+    el.costsUpdated.textContent = "";
+    return;
+  }
+  const age = Math.max(0, Math.round((Date.now() - costsLastGeneratedAt) / 1000));
+  let nextPart = "";
+  if (Number.isFinite(costsNextAutoAt)) {
+    const next = Math.max(0, Math.ceil((costsNextAutoAt - Date.now()) / 1000));
+    nextPart = ` · next auto refresh in ${next}s`;
+  }
+  el.costsUpdated.textContent = `updated ${age}s ago${nextPart}`;
+}
+
+function costsRows(rows) {
+  return rows.map(([label, text]) => {
+    const row = document.createElement("div");
+    row.className = "costs-row";
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = text;
+    row.append(dt, dd);
+    return row;
+  });
+}
+
+function renderCosts(value) {
+  const or = value.openrouter || {};
+  const ovh = value.ovhcloud || {};
+  const elv = value.elevenlabs || {};
+  el.openrouterCostsSection.hidden = or.configured === false;
+  el.ovhcloudCostsSection.hidden = ovh.configured === false;
+  el.elevenlabsCostsSection.hidden = elv.configured === false;
+  el.costsPanel.hidden = el.openrouterCostsSection.hidden && el.ovhcloudCostsSection.hidden && el.elevenlabsCostsSection.hidden;
+  if (or.configured !== false) {
+    const rows = [
+      ["Balance", or.balance === null || or.balance === undefined ? "—" : costsEur.format(or.balance)],
+      ["Used this month", or.used_monthly === null || or.used_monthly === undefined ? "—" : costsEur.format(or.used_monthly)],
+    ];
+    if (or.is_free_tier && or.free_model_daily) rows.push(["Free requests left", String(or.free_model_daily.remaining)]);
+    if (or.error) rows.push(["Status", or.stale ? `stale: ${or.error}` : or.error]);
+    el.openrouterCosts.replaceChildren(...costsRows(rows));
+  }
+  if (ovh.configured !== false) {
+    const rows = [];
+    const ai = ovh.ai_current_month;
+    if (ai) rows.push([
+      `AI usage ${ai.month}`,
+      costsEur.format(ai.cost_eur),
+    ]);
+    if (ovh.error) rows.push(["Status", ovh.stale ? `stale: ${ovh.error}` : ovh.error]);
+    el.ovhcloudCosts.replaceChildren(...costsRows(rows));
+  }
+  if (elv.configured !== false) {
+    const rows = [
+      ["Tier", elv.tier || "—"],
+      ["Used characters", Number.isFinite(Number(elv.character_count)) ? Number(elv.character_count).toLocaleString() : "—"],
+      ["Character limit", Number.isFinite(Number(elv.character_limit)) ? Number(elv.character_limit).toLocaleString() : "—"],
+      ["Remaining", Number.isFinite(Number(elv.remaining_characters)) ? Number(elv.remaining_characters).toLocaleString() : "—"],
+      ["Usage", Number.isFinite(Number(elv.used_percent)) ? `${Number(elv.used_percent).toFixed(1)}%` : "—"],
+    ];
+    if (elv.next_reset_iso) rows.push(["Next reset", new Date(elv.next_reset_iso).toLocaleString()]);
+    if (elv.error) rows.push(["Status", elv.stale ? `stale: ${elv.error}` : elv.error]);
+    el.elevenlabsCosts.replaceChildren(...costsRows(rows));
+  }
+  const generated = value.generated_at ? Date.parse(value.generated_at) : NaN;
+  costsLastGeneratedAt = Number.isNaN(generated) ? Date.now() : generated;
+  costsStatusOverride = "";
+  costsNextAutoAt = Date.now() + COSTS_REFRESH_MS;
+  renderCostsUpdatedLabel();
+}
+
+async function loadCosts(force) {
+  let response;
+  try {
+    // force=true (the panel's manual "Refresh" button) bypasses the backend
+    // TTL cache with ?fresh=1; the 60 s poll uses the cached view.
+    const url = force ? "/api/costs?fresh=1" : "/api/costs";
+    response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(20000) });
+  } catch {
+    costsStatusOverride = "costs unavailable";
+    renderCostsUpdatedLabel();
+    return;
+  }
+  if (!response.ok) {
+    costsStatusOverride = `costs unavailable (HTTP ${response.status})`;
+    renderCostsUpdatedLabel();
+    return;
+  }
+  const value = await response.json().catch(() => null);
+  if (!value) {
+    costsStatusOverride = "costs unavailable";
+    renderCostsUpdatedLabel();
+    return;
+  }
+  renderCosts(value);
+}
+
+function stopCostsPolling() {
+  if (costsTimer) clearInterval(costsTimer);
+  if (costsTicker) clearInterval(costsTicker);
+  costsTimer = null;
+  costsTicker = null;
+}
+
+function startCostsPolling() {
+  stopCostsPolling();
+  costsStatusOverride = "";
+  renderCostsUpdatedLabel();
+  loadCosts();
+  costsTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadCosts();
+  }, COSTS_REFRESH_MS);
+  costsTicker = setInterval(() => {
+    if (document.hidden) return;
+    renderCostsUpdatedLabel();
+  }, 1000);
+}
+
+el.costsRefreshButton.addEventListener("click", () => { loadCosts(true); });
+
+async function loadConfig(userFromLogin) {
+  stage("standby", "Loading", "Loading runtime configuration.");
+  const response = await fetch("/api/config", { cache: "no-store", signal: AbortSignal.timeout(10000) });
+  if (response.status === 403) {
+    const notAuthed = await response.json().catch(() => ({}));
+    if (notAuthed.loginHint) loginHintText = notAuthed.loginHint;
+    showLogin();
+    return;
+  }
+  if (!response.ok) throw new Error(`Configuration HTTP ${response.status}`);
+  const value = await response.json();
+  appReleaseVersion = String(value.appVersion || "unknown").trim() || "unknown";
+  el.appReleaseVersion.textContent = `Version ${appReleaseVersion}`;
+  // A 200 means the server accepts our session (or runs without login), so the
+  // app shell becomes visible and the login panel goes away.
+  authedUser = userFromLogin || value.user || authedUser;
+  document.body.classList.add("authenticated");
+  el.loginPanel.hidden = true;
+  el.userLine.textContent = authedUser ? `Signed in as ${authedUser}` : "";
+    value.whisperProfiles ||= (value.whisperEndpoints || []).length ? [{
+      id: "default",
+      label: "Default Whisper",
+      endpoints: value.whisperEndpoints,
+      model: value.whisperModel || "configured model",
+    }] : [];
+    value.aiProfiles ||= [{
+      id: "default",
+      label: "Default AI",
+      profile: "server default",
+      baseUrl: value.brainBaseUrl,
+      model: value.brainModel,
+      configured: value.brainConfigured !== false,
+    }];
+    value.brainProfileDefault ||= value.aiProfiles.find((profile) => profile.configured !== false)?.id || value.aiProfiles[0]?.id || "default";
+    if (!value.whisperProfiles?.length || !value.wakePhrase || !(value.silenceMs > 0)) {
+      throw new Error("Invalid Whisper/wake configuration");
+    }
+    config = value;
+    el.aiProfileSelect.replaceChildren(...selectOptions(config.aiProfiles || [], (profile) =>
+      profile.label + (profile.configured === false ? " (not configured)" : "")));
+    el.whisperProfileSelect.replaceChildren(...selectOptions(config.whisperProfiles || [], (profile) =>
+      profile.label));
+    let savedAiProfile = null;
+    let savedWhisperProfile = null;
+    try {
+      savedAiProfile = localStorage.getItem(aiProfileStorageKey);
+      savedWhisperProfile = localStorage.getItem(whisperProfileStorageKey);
+    } catch (error) {
+      log("settings", "Could not load endpoint selector settings", { message: error.message });
+    }
+    setAiProfile(savedAiProfile || config.brainProfileDefault, false);
+    setWhisperProfile(savedWhisperProfile || "gpu-1", false);
+    el.aiProfileSelect.disabled = false;
+    el.whisperProfileSelect.disabled = false;
+    // Show the connection state of both active endpoints right away.
+    testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
+    testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);
+    el.wakeWordStatus.textContent = `Server default: "${config.wakePhrase}". Apply a personal wake word for this browser.`;
+    try {
+      const saved = localStorage.getItem(wakeWordStorageKey);
+      if (saved !== null) {
+        config.wakePhrase = normalizeWakePhrase(saved);
+        el.wakeWordStatus.textContent = `Personal wake word loaded for this browser: "${config.wakePhrase}".`;
+      }
+    } catch (error) {
+      el.wakeWordStatus.textContent = `Could not load a saved wake word; using server default "${config.wakePhrase}".`;
+      log("settings", "Could not load wake word", { message: error.message });
+    }
+    el.wakeWordInput.value = config.wakePhrase;
+    el.wakeWordInput.disabled = el.saveWakeWordButton.disabled = false;
+    let savedVoice = null;
+    let savedElevenVoice = null;
+    try {
+      savedVoice = localStorage.getItem(voiceStorageKey);
+      savedElevenVoice = localStorage.getItem(elevenVoiceStorageKey);
+    } catch (error) {
+      log("settings", "Could not load voice", { message: error.message });
+    }
+    elevenVoiceId = String(savedElevenVoice || config.elevenlabsVoiceId || "").trim();
+    syncVoiceSelectorOptions();
+    applyVoice(savedVoice ?? voiceId, false);
+    let savedVoiceProvider = null;
+    try {
+      savedVoiceProvider = localStorage.getItem(voiceProviderStorageKey);
+    } catch (error) {
+      log("settings", "Could not load voice provider", { message: error.message });
+    }
+    setVoiceProvider(savedVoiceProvider || "builtin", false);
+    void loadElevenVoiceChoices();
+    let savedSpeed = null;
+    try {
+      savedSpeed = localStorage.getItem(voiceSpeedStorageKey);
+    } catch (error) {
+      log("settings", "Could not load speaking speed", { message: error.message });
+    }
+    applyVoiceSpeed(savedSpeed ?? voiceSpeed, false);
+    let savedSilence = null;
+    try {
+      savedSilence = localStorage.getItem(silenceStorageKey);
+    } catch (error) {
+      log("settings", "Could not load silence stop", { message: error.message });
+    }
+    // The saved per-browser value wins over the server default (SILENCE_MS);
+    // applySilenceDelay also sets the vad step name and the silence bar scale.
+    applySilenceDelay(savedSilence ?? config.silenceMs, false);
+    el.silenceDelay.disabled = false;
+    let savedCommandWait = null;
+    try {
+      savedCommandWait = localStorage.getItem(commandWaitStorageKey);
+    } catch (error) {
+      log("settings", "Could not load command wait", { message: error.message });
+    }
+    // No server default: the saved per-browser value wins over the 3 s built-in.
+    applyCommandWait(savedCommandWait ?? commandWaitMs, false);
+    el.commandWait.disabled = false;
+    let savedHistoryDays = null;
+    try {
+      savedHistoryDays = localStorage.getItem(historyDaysStorageKey);
+    } catch (error) {
+      log("settings", "Could not load history days");
+    }
+    // The saved per-browser value wins over the 24-day default; applying it
+    // also fetches the window and renders the panel.
+    applyHistoryDays(savedHistoryDays ?? historyDays, false);
+    el.historyDays.disabled = false;
+    // The History search panel's sliders are built from the backend's own
+    // limits, so they only exist once the config has landed.
+    applyHistorySearchConfig(config.historySearch);
+    el.historySearchEngine.textContent = config.embeddingConfigured
+      ? `Semantic search: on, model ${config.embeddingModel}. Searches match by meaning as well as by words.`
+      : "Semantic search: not configured on this backend — searches match literal words only, and the similarity sliders have no effect.";
+    let savedSpeakEnabled = null;
+    try {
+      savedSpeakEnabled = localStorage.getItem(speakEnabledStorageKey);
+    } catch (error) {
+      log("settings", "Could not load voice output setting");
+    }
+    setSpeakEnabled(savedSpeakEnabled === null ? true : savedSpeakEnabled === "true", false);
+    el.speakSwitch.disabled = false;
+    let savedLanguage = null;
+    try {
+      savedLanguage = localStorage.getItem(languageStorageKey);
+    } catch (error) {
+      log("settings", "Could not load language", { message: error.message });
+    }
+    // The saved choice wins; otherwise English is the default.
+    setLanguage(savedLanguage || "en", false);
+    el.languageSwitch.disabled = false;
+    let savedAppearance = null;
+    try {
+      savedAppearance = JSON.parse(localStorage.getItem(appearanceStorageKey) || "null");
+    } catch (error) {
+      log("settings", "Could not load appearance settings", { message: error.message });
+    }
+    applyAppearanceSettings(savedAppearance || appearanceDefaults, false, true);
+    for (const id of [
+      "appearanceFontScale", "appearanceFontFamily",
+      "appearanceTextColor", "appearanceMutedColor", "appearanceAccentColor",
+      "appearancePanelColor", "appearancePanelOpacity", "appearanceResetButton",
+    ]) {
+      el[id].disabled = false;
+    }
+    mcpServers.push(...(value.mcpServers || []));
+    buildMcpSwitches();
+    for (const server of mcpServers) {
+      let saved = null;
+      try {
+        saved = localStorage.getItem(`jarvis.mcp.${server.id}`);
+      } catch (error) {
+        log("settings", `Could not load ${server.label} setting`);
+      }
+      setMcpFlag(server.id, saved === null ? true : saved === "true", false);
+      document.getElementById(`mcpSwitch-${server.id}`).disabled = false;
+    }
+    updateMcpMaster();
+    el.mcpMasterSwitch.disabled = false;
+    // The Websearch sources panel is per-account on the server: load the
+    // list (seeded with the built-in baseline on first use) and unlock the
+    // add form.
+    el.websearchAddSource.disabled = false;
+    el.websearchAddUrl.disabled = false;
+    el.websearchAddButton.disabled = false;
+    loadWebsearchSources();
+    // The graph size sliders: restore the persisted values (50–200) before
+    // the 3D view is created, so the first render already uses them.
+    let savedGraphSizes = null;
+    try {
+      savedGraphSizes = JSON.parse(localStorage.getItem(graphSizesStorageKey) || "null");
+      if (!savedGraphSizes || typeof savedGraphSizes !== "object") {
+        savedGraphSizes = JSON.parse(localStorage.getItem(legacyGraphSizesStorageKey) || "null");
+      }
+    } catch (error) {
+      log("settings", "Could not load graph sizes setting");
+    }
+    if (savedGraphSizes) {
+      const edgeValue = Number(savedGraphSizes.edgeBrightness);
+      if (Number.isFinite(edgeValue) && edgeValue >= 30 && edgeValue <= 200) el.graphEdgeBrightness.value = String(edgeValue);
+      const limitValue = Number(savedGraphSizes.entityLimit);
+      if (Number.isFinite(limitValue) && limitValue >= GRAPH_ENTITY_LIMIT_MIN) {
+        pendingGraphEntityLimit = Math.round(limitValue);
+        el.graphEntityLimit.value = String(pendingGraphEntityLimit);
+      }
+      for (const [key, slider] of [["node", el.graphNodeSize], ["text", el.graphTextSize]]) {
+        const value = Number(savedGraphSizes[key]);
+        if (Number.isFinite(value) && value >= 50 && value <= 200) slider.value = String(value);
+      }
+    }
+    graphScales.edgeBrightness = Number(el.graphEdgeBrightness.value) / 100;
+    graphScales.entityLimit = Number(el.graphEntityLimit.value);
+    graphScales.node = Number(el.graphNodeSize.value) / 100;
+    graphScales.text = Number(el.graphTextSize.value) / 100;
+    applyGraphScales();
+    // Restore the persisted relevance filter before the first render.
+    let savedRelevance = null;
+    try {
+      savedRelevance = localStorage.getItem(graphRelevanceStorageKey);
+    } catch (error) {
+      log("settings", "Could not load graph relevance setting");
+    }
+    if (savedRelevance === "direct" || savedRelevance === "near" || savedRelevance === "all") {
+      graphRelevance = savedRelevance;
+      el.graphRelevance.value = savedRelevance;
+    }
+    el.graphRefreshButton.disabled = false;
+    setGraphView("3d"); // the live 3D view is the default panel view
+    loadGraph();
+    setInterval(() => { if (!document.hidden) loadGraph(); }, 15000);
+    // The conversation history the Conversation panel scrolls over is loaded
+    // by applyHistoryDays above (the saved window wins over the 24-day
+    // default); the History slider re-fetches on every change.
+    let savedPanels = null;
+    try {
+      savedPanels = localStorage.getItem(panelsStorageKey);
+    } catch (error) {
+      log("settings", "Could not load panels setting");
+    }
+    setPanelsVisible(savedPanels === null ? true : savedPanels === "true", false);
+    // Restore the saved grip positions AFTER the panels mode is set, so the
+    // inline heights are clamped by the right min/max (and the half-cap CSS
+    // default applies to a browser with no saved size yet).
+    rememberResizeHeight(el.conversationText, transcriptListHeightKey);
+    rememberResizeHeight(el.manualPrompt, promptHeightKey);
+    log("stt", `Configured STT profiles: ${config.whisperProfiles.map((profile) => `${profile.label} ${profile.endpoints.join(", ")}`).join(" | ")} (no request yet)`);
+    el.armButton.disabled = el.sendManualButton.disabled = false;
+    el.enableSwitch.disabled = false;
+    for (const button of previewButtons) button.disabled = false;
+    startCostsPolling();
+    stage("standby", "Standby", "Arm Jarvis to start wake listening. Microphone audio stays local until a probe or command is sent.");
+    log("build", "PCM lifecycle v3");
+}
+
+loadConfig().catch((error) => stage("error", "Configuration failed", error.message));

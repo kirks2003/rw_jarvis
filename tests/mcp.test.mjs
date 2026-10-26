@@ -1,0 +1,665 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import {
+  cleanHtml, decodeDuckDuckGoHref, decodeBingUrl, normalizeUrlForDedupe, mergeResults, formatSearchResults,
+  INTEREST_FEEDS, normalizeTopic, parseFeedItems, formatNewsItems, browserHeaders,
+  isSafeFetchUrl, isBlockedIp, htmlToText,
+  sourceHost, searchSourceNames, newsSourceNames,
+} from "../mcp/engines.mjs";
+import path from "node:path";
+import normalizeModule from "../mcp/normalize-external-args.cjs";
+
+const { normalizeExternalMcpArgs, normalizeCreateTaskKandev, inferLocalRepoPath } = normalizeModule;
+
+test("cleanHtml strips tags and named plus numeric entities", () => {
+  assert.equal(cleanHtml("<b>Rocky</b> &amp; the <i>Rolling Stones</i>"), "Rocky & the Rolling Stones");
+  assert.equal(cleanHtml("A&#0183;B &#x27;quoted&#x27; &quot;x&quot;"), "A·B 'quoted' \"x\"");
+  assert.equal(cleanHtml("It&apos;s &apos;quoted&apos;"), "It's 'quoted'");
+  assert.equal(cleanHtml("  multi   space\nlines "), "multi space lines");
+});
+
+test("DuckDuckGo redirect links unwrap to the real target, ads come back empty", () => {
+  const organic = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fhuggingface.co%2Fhexgrad%2FKokoro-82M&amp;rut=abc";
+  assert.equal(decodeDuckDuckGoHref(organic), "https://huggingface.co/hexgrad/Kokoro-82M");
+  // Ads are double-wrapped: the uddg target itself is duckduckgo.com/y.js.
+  const ad = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad_domain%3Dexample.com%26ad_provider%3Dbingv7aa";
+  assert.equal(decodeDuckDuckGoHref(ad), "");
+  assert.equal(decodeDuckDuckGoHref("https://example.com/plain"), "https://example.com/plain");
+  assert.equal(decodeDuckDuckGoHref(""), "");
+  assert.equal(decodeDuckDuckGoHref("not a url"), "");
+});
+
+test("Bing redirect links unwrap the base64url target, dead ends come back empty", () => {
+  const target = "https://example.com/page?x=1&y=2";
+  const encoded = Buffer.from(target, "utf8").toString("base64url");
+  assert.equal(decodeBingUrl(`https://www.bing.com/ck/a?!&p=x&amp;u=a1${encoded}`), target);
+  assert.equal(decodeBingUrl("https://www.bing.com/some/dead-end"), "");
+  assert.equal(decodeBingUrl("https://example.com/plain"), "https://example.com/plain");
+  assert.equal(decodeBingUrl(""), "");
+  assert.equal(decodeBingUrl("not a url"), "");
+});
+
+test("dedupe normalisation ignores scheme, www and trailing slash", () => {
+  assert.equal(normalizeUrlForDedupe("https://www.example.com/a/b/"), "example.com/a/b");
+  assert.equal(normalizeUrlForDedupe("http://example.com/a/b"), "example.com/a/b");
+  assert.equal(normalizeUrlForDedupe("not a url"), "not a url");
+});
+
+test("mergeResults round-robins engines, dedupes and caps", () => {
+  const sets = [
+    {
+      engine: "duckduckgo",
+      results: [
+        { title: "d1", url: "https://example.com/a", snippet: "" },
+        { title: "d2", url: "https://example.com/b", snippet: "" },
+        { title: "d3", url: "https://example.com/c", snippet: "" },
+      ],
+    },
+    {
+      engine: "bing",
+      // Same page as d1 in a different form: must be deduped away.
+      results: [
+        { title: "b1", url: "https://www.example.com/a/", snippet: "" },
+        { title: "b2", url: "https://example.com/d", snippet: "" },
+      ],
+    },
+    { engine: "wikipedia", results: [{ title: "w1", url: "https://en.wikipedia.org/wiki/X", snippet: "" }] },
+  ];
+  const merged = mergeResults(sets, 4);
+  assert.deepEqual(merged.map((result) => `${result.engine}:${result.url}`), [
+    "duckduckgo:https://example.com/a",
+    "wikipedia:https://en.wikipedia.org/wiki/X",
+    "duckduckgo:https://example.com/b",
+    "bing:https://example.com/d",
+  ]);
+  const all = mergeResults(sets, 10);
+  assert.equal(all.length, 5);
+  assert.equal(all.filter((result) => result.engine === "duckduckgo").length, 3);
+  assert.deepEqual(mergeResults([{ engine: "x", results: [{ title: "no url" }] }], 5), []);
+  assert.deepEqual(mergeResults([], 5), []);
+});
+
+test("formatSearchResults tags engines and puts the instant answer first", () => {
+  const text = formatSearchResults(
+    [{ engine: "bing", title: "T", url: "https://example.com", snippet: "S" }],
+    "The instant answer.",
+  );
+  assert.equal(text, "Instant answer (DuckDuckGo):\nThe instant answer.\n\n1. [bing] T\nhttps://example.com\nS");
+  assert.equal(formatSearchResults([{ engine: "duckduckgo", title: "Only", url: "https://x.test", snippet: "" }], null),
+    "1. [duckduckgo] Only\nhttps://x.test\n");
+  assert.equal(formatSearchResults([], null), "");
+});
+
+const RSS_SAMPLE = `<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Sample feed</title>
+  <item>
+    <title><![CDATA[First &amp; <b>bold</b> story]]></title>
+    <link>https://news.example.com/first</link>
+    <description>Snippet one</description>
+    <pubDate>Tue, 05 Oct 2026 12:00:00 +0000</pubDate>
+  </item>
+  <item>
+    <title>Second story</title>
+    <link>https://news.example.com/second</link>
+    <guid isPermaLink="false">news.example.com/second</guid>
+    <description>Snippet two</description>
+    <pubDate>Tue, 05 Oct 2026 09:00:00 +0000</pubDate>
+  </item>
+  <item>
+    <title>Linkless story</title>
+    <description>no link, must be skipped</description>
+  </item>
+</channel></rss>`;
+
+const ATOM_SAMPLE = `<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom feed</title>
+  <id>https://feeds.example.com/</id>
+  <link rel="self" href="https://feeds.example.com/self.xml"/>
+  <entry>
+    <title>Atom entry</title>
+    <link rel="alternate" type="text/html" href="https://feeds.example.com/entry-1"/>
+    <id>entry-1</id>
+    <updated>2026-10-05T08:00:00Z</updated>
+    <summary>Atom summary</summary>
+  </entry>
+  <entry>
+    <title>Second entry</title>
+    <link rel="alternate" href="https://feeds.example.com/entry-2"/>
+    <published>2026-10-04T08:00:00Z</published>
+  </entry>
+</feed>`;
+
+test("parseFeedItems reads RSS 2.0 and Atom items, strips markup, skips linkless items", () => {
+  const rss = parseFeedItems(RSS_SAMPLE, "Sample");
+  assert.deepEqual(rss, [
+    { title: "First & bold story", url: "https://news.example.com/first", snippet: "Snippet one", source: "Sample", date: Date.parse("Tue, 05 Oct 2026 12:00:00 +0000") },
+    { title: "Second story", url: "https://news.example.com/second", snippet: "Snippet two", source: "Sample", date: Date.parse("Tue, 05 Oct 2026 09:00:00 +0000") },
+  ]);
+  const atom = parseFeedItems(ATOM_SAMPLE, "Atom");
+  assert.deepEqual(atom, [
+    { title: "Atom entry", url: "https://feeds.example.com/entry-1", snippet: "Atom summary", source: "Atom", date: Date.parse("2026-10-05T08:00:00Z") },
+    { title: "Second entry", url: "https://feeds.example.com/entry-2", snippet: "", source: "Atom", date: Date.parse("2026-10-04T08:00:00Z") },
+  ]);
+  assert.deepEqual(parseFeedItems("<html>no feed</html>", "X"), []);
+  assert.deepEqual(parseFeedItems("", "X"), []);
+});
+
+test("normalizeTopic maps the interest-area spellings and leaves free topics alone", () => {
+  assert.equal(normalizeTopic("technik"), "technik");
+  assert.equal(normalizeTopic("Technologie"), "technik");
+  assert.equal(normalizeTopic("TECHNIK"), "technik");
+  assert.equal(normalizeTopic("it"), "it");
+  assert.equal(normalizeTopic("Informatik"), "it");
+  assert.equal(normalizeTopic("finance"), "finance");
+  assert.equal(normalizeTopic("Finanzen"), "finance");
+  assert.equal(normalizeTopic("geek"), "geek");
+  assert.equal(normalizeTopic("nerd"), "nerd");
+  assert.equal(normalizeTopic("Home Assistant"), null);
+  assert.equal(normalizeTopic("  "), null);
+  assert.equal(normalizeTopic(null), null);
+});
+
+test("browserHeaders look like a normal Chrome request and steer the language", () => {
+  const de = browserHeaders("de", true);
+  assert.match(de["user-agent"], /^Mozilla\/5\.0 .*Chrome\/\d+\.\d+\.\d+\.\d+ Safari/);
+  assert.equal(de["accept-language"], "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7");
+  assert.match(de["sec-ch-ua"], /^"Chromium";v="/);
+  assert.equal(de["sec-ch-ua-mobile"], "?0");
+  assert.equal(de["sec-fetch-dest"], "document");
+  assert.equal(de["sec-fetch-mode"], "navigate");
+  assert.equal(de["sec-fetch-user"], "?1");
+  assert.equal(de["upgrade-insecure-requests"], "1");
+  assert.equal(de["priority"], "u=0,i");
+  assert.match(de.accept, /^text\/html/);
+  assert.equal(de["accept-encoding"], "gzip, deflate, br");
+
+  const en = browserHeaders("en", false);
+  assert.equal(en["accept-language"], "en-US,en;q=0.9");
+  assert.equal(en["sec-fetch-dest"], "empty");
+  assert.equal(en["sec-fetch-mode"], "cors");
+  assert.equal(en["sec-fetch-user"], undefined);
+  assert.equal(en["upgrade-insecure-requests"], undefined);
+  assert.equal(en["priority"], "u=1,i");
+  assert.equal(en.accept, "*/*");
+});
+
+test("isBlockedIp rejects private/loopback/link-local/internal ranges in v4 and v6", () => {
+  // Loopback, unspecified, private, CGNAT, link-local (metadata), benchmarking.
+  assert.equal(isBlockedIp("127.0.0.1"), true);
+  assert.equal(isBlockedIp("0.0.0.0"), true);
+  assert.equal(isBlockedIp("10.0.0.5"), true);
+  assert.equal(isBlockedIp("192.168.1.1"), true);
+  assert.equal(isBlockedIp("172.16.0.1"), true);
+  assert.equal(isBlockedIp("172.31.255.255"), true);
+  assert.equal(isBlockedIp("100.64.0.1"), true);
+  assert.equal(isBlockedIp("169.254.169.254"), true); // cloud metadata
+  assert.equal(isBlockedIp("198.18.0.1"), true);
+  // Public ranges are allowed.
+  assert.equal(isBlockedIp("8.8.8.8"), false);
+  assert.equal(isBlockedIp("1.1.1.1"), false);
+  assert.equal(isBlockedIp("172.32.0.1"), false); // just outside 172.16/12
+  assert.equal(isBlockedIp("100.128.0.1"), false); // just outside CGNAT
+  // IPv6: unspecified, loopback, unique-local, link-local.
+  assert.equal(isBlockedIp("::"), true);
+  assert.equal(isBlockedIp("::1"), true);
+  assert.equal(isBlockedIp("fd00::1"), true);
+  assert.equal(isBlockedIp("fe80::1"), true);
+  // IPv4-mapped IPv6 of a private address is blocked too.
+  assert.equal(isBlockedIp("::ffff:10.0.0.1"), true);
+  assert.equal(isBlockedIp("::ffff:8.8.8.8"), false);
+  // Garbage is fail-closed.
+  assert.equal(isBlockedIp(""), true);
+  assert.equal(isBlockedIp("not-an-ip"), true);
+  assert.equal(isBlockedIp(null), true);
+});
+
+test("isSafeFetchUrl allows only http(s) on default ports, no creds, no internal IPs", () => {
+  assert.equal(isSafeFetchUrl("https://example.com/page"), null);
+  assert.equal(isSafeFetchUrl("http://example.com"), null);
+  assert.equal(isSafeFetchUrl("https://example.com:443/"), null);
+  assert.equal(isSafeFetchUrl("http://example.com:80/"), null);
+  assert.match(isSafeFetchUrl("ftp://example.com"), /only http\/https/);
+  assert.match(isSafeFetchUrl("https://example.com:8443/"), /default ports/);
+  assert.match(isSafeFetchUrl("https://user:pass@example.com/"), /credentials/);
+  assert.match(isSafeFetchUrl("http://127.0.0.1/admin"), /private\/internal/);
+  assert.match(isSafeFetchUrl("http://169.254.169.254/latest/meta-data/"), /private\/internal/);
+  assert.match(isSafeFetchUrl("http://10.0.0.5/"), /private\/internal/);
+  assert.match(isSafeFetchUrl("not a url"), /not a valid URL/);
+  assert.match(isSafeFetchUrl(""), /not a valid URL/);
+});
+
+test("htmlToText strips head/script/style, takes the body, collapses whitespace and caps length", () => {
+  const html = `<html><head><title>Ignored</title><style>body{}</style><script>var x=1;</script></head>
+  <body><h1>Headline</h1><p>Body text&nbsp;here &amp; more.</p><script>more()</script></body></html>`;
+  const text = htmlToText(html, 1000);
+  assert.match(text, /Headline/);
+  assert.match(text, /Body text here & more\./);
+  assert.doesNotMatch(text, /Ignored/);
+  assert.doesNotMatch(text, /var x=1/);
+  assert.doesNotMatch(text, /body\{\}/);
+  const capped = htmlToText(`<body>${"a".repeat(5000)}</body>`, 2000);
+  assert.ok(capped.length < 2100);
+  assert.match(capped, /truncated/);
+});
+
+test("the interest feed map covers the five areas with reachable http(s) feeds", () => {
+  for (const area of ["technik", "it", "finance", "geek", "nerd"]) {
+    const feeds = INTEREST_FEEDS[area];
+    assert.ok(Array.isArray(feeds) && feeds.length >= 2, `${area} has curated feeds`);
+    for (const feed of feeds) {
+      assert.ok(/^https:\/\//.test(feed.url), `${area} feed URL is https`);
+      assert.ok(feed.source, `${area} feed has a source name`);
+      assert.ok(feed.lang === "de" || feed.lang === "en", `${area} feed has a language`);
+    }
+  }
+});
+
+test("formatNewsItems sorts newest first and tags source, date and URL", () => {
+  const items = [
+    { title: "Old", url: "https://a.test/1", snippet: "", source: "Feed A", date: Date.parse("2026-10-01T00:00:00Z") },
+    { title: "New", url: "https://a.test/2", snippet: "S", source: "Feed B", date: Date.parse("2026-10-05T00:00:00Z") },
+    { title: "Undated", url: "https://a.test/3", snippet: "", source: "Feed C", date: 0 },
+  ];
+  const text = formatNewsItems(items);
+  assert.equal(text, "1. New — Feed B (2026-10-05)\nhttps://a.test/2\nS\n\n2. Old — Feed A (2026-10-01)\nhttps://a.test/1\n\n\n3. Undated — Feed C\nhttps://a.test/3\n");
+  assert.equal(formatNewsItems([]), "");
+});
+
+test("sourceHost reads the portal name from a URL, never the raw address", () => {
+  assert.equal(sourceHost("https://www.heise.de/news/article?x=1"), "heise.de");
+  assert.equal(sourceHost("https://en.wikipedia.org/wiki/Foo/Bar"), "en.wikipedia.org");
+  assert.equal(sourceHost("https://sub.domain.example.co.uk:8443/a/b"), "sub.domain.example.co.uk");
+  assert.equal(sourceHost("http://intranet.local/page"), "intranet.local");
+  assert.equal(sourceHost("not a url"), "");
+  assert.equal(sourceHost(""), "");
+  assert.equal(sourceHost(null), "");
+});
+
+test("searchSourceNames keeps first-seen portal order and drops duplicates", () => {
+  assert.deepEqual(searchSourceNames([
+    { title: "a", url: "https://www.a.example/x", snippet: "" },
+    { title: "b", url: "https://b.example/y", snippet: "" },
+    { title: "c", url: "https://www.a.example/z", snippet: "" },
+    { title: "d", snippet: "" },
+    { title: "e", url: "garbage", snippet: "" },
+  ]), ["a.example", "b.example"]);
+  assert.deepEqual(searchSourceNames([]), []);
+  assert.deepEqual(searchSourceNames(null), []);
+});
+
+test("newsSourceNames follows the newest-first order of formatNewsItems", () => {
+  // The feed name is the portal label; an item without one falls back to the host.
+  assert.deepEqual(newsSourceNames([
+    { title: "Old", url: "https://old.example/1", source: "Feed A", date: Date.parse("2026-10-01T00:00:00Z") },
+    { title: "New", url: "https://new.example/2", source: "Feed B", date: Date.parse("2026-10-05T00:00:00Z") },
+    { title: "Undated", url: "https://undated.example/3", source: "", date: 0 },
+  ]), ["Feed B", "Feed A", "undated.example"]);
+  assert.deepEqual(newsSourceNames([]), []);
+  assert.deepEqual(newsSourceNames(null), []);
+});
+
+function startMcpServer() {
+  const child = spawn(process.execPath, [fileURLToPath(new URL("../mcp/websearch.mjs", import.meta.url))], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let buffer = "";
+  let nextId = 1;
+  const pending = new Map();
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const entry = message.id !== undefined ? pending.get(message.id) : null;
+      if (!entry) continue;
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (message.error) entry.reject(new Error(message.error.message || "MCP error"));
+      else entry.resolve(message.result);
+    }
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`${method} timed out`));
+    }, 10000);
+    pending.set(id, { resolve, reject, timer });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+  });
+  const notify = (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
+  return {
+    request,
+    notify,
+    close: () => new Promise((resolve) => {
+      child.once("exit", resolve);
+      child.kill();
+    }),
+  };
+}
+
+test("MCP web-search server speaks the MCP protocol over stdio", async (t) => {
+  const server = startMcpServer();
+  t.after(() => server.close());
+
+  const init = await server.request("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "jarvis-test", version: "0.1.0" },
+  });
+  assert.equal(init.serverInfo.name, "jarvis-websearch");
+  assert.deepEqual(init.capabilities.tools, { listChanged: false });
+  server.notify("notifications/initialized");
+
+  const tools = await server.request("tools/list");
+  assert.deepEqual(tools.tools.map((tool) => tool.name), ["web_search", "web_news", "web_fetch"]);
+  assert.deepEqual(tools.tools[0].inputSchema.required, ["query"]);
+  assert.deepEqual(tools.tools[1].inputSchema.required, ["topic"]);
+  assert.deepEqual(tools.tools[2].inputSchema.required, ["url"]);
+
+  const empty = await server.request("tools/call", { name: "web_search", arguments: { query: "   " } });
+  assert.equal(empty.isError, true);
+  const emptyNews = await server.request("tools/call", { name: "web_news", arguments: { topic: "  " } });
+  assert.equal(emptyNews.isError, true);
+  await assert.rejects(server.request("tools/call", { name: "no_such_tool", arguments: {} }), /Unknown tool/);
+  await assert.rejects(server.request("resources/list", {}), /Method not found/);
+});
+
+// The web_fetch SSRF guard must reject internal addresses BEFORE any network
+// or browser work, so the brain (or a prompt injection) can never reach the
+// metadata endpoint, the DB container or the app itself.
+test("web_fetch rejects unsafe URLs over the protocol without touching the network", async (t) => {
+  const server = startMcpServer();
+  t.after(() => server.close());
+  await server.request("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "jarvis-test", version: "0.1.0" },
+  });
+
+  const cases = [
+    { url: "http://127.0.0.1/api/health", pattern: /private\/internal/ },
+    { url: "http://127.0.0.1:8094/api/health", pattern: /default ports/ },
+    { url: "http://169.254.169.254/latest/meta-data/", pattern: /private\/internal/ },
+    { url: "http://10.1.2.3/", pattern: /private\/internal/ },
+    { url: "http://[::1]/", pattern: /private\/internal/ },
+    { url: "file:///etc/passwd", pattern: /only http\/https/ },
+    { url: "https://example.com:8443/", pattern: /default ports/ },
+    { url: "https://user:pw@example.com/", pattern: /credentials/ },
+    { url: "   ", pattern: /Empty URL/ },
+  ];
+  for (const { url, pattern } of cases) {
+    const result = await server.request("tools/call", { name: "web_fetch", arguments: { url } });
+    assert.equal(result.isError, true, `web_fetch(${url}) is an error`);
+    assert.match(result.content[0].text, pattern, `web_fetch(${url}) message matches`);
+  }
+});
+
+function missingFs() {
+  const fail = () => {
+    throw new Error("fs disabled");
+  };
+  return { readdirSync: fail, statSync: fail };
+}
+
+function repoFs(base, workspace, repos) {
+  const root = path.join(base, workspace, "github");
+  const dirs = new Set([root]);
+  const entries = new Map();
+  for (const repo of repos) {
+    const [owner, repoName] = repo.split("/");
+    const ownerDir = path.join(root, owner);
+    const repoDir = path.join(root, owner, repoName);
+    dirs.add(ownerDir);
+    dirs.add(repoDir);
+    if (!entries.has(root)) entries.set(root, []);
+    if (!entries.has(ownerDir)) entries.set(ownerDir, []);
+    if (!entries.get(root).some((entry) => entry.name === owner)) {
+      entries.get(root).push({ name: owner, isDirectory: () => true });
+    }
+    if (!entries.get(ownerDir).some((entry) => entry.name === repoName)) {
+      entries.get(ownerDir).push({ name: repoName, isDirectory: () => true });
+    }
+  }
+  return {
+    readdirSync(target) {
+      return entries.get(path.normalize(target)) ?? [];
+    },
+    statSync(target) {
+      return { isDirectory: () => dirs.has(path.normalize(target)) };
+    },
+  };
+}
+
+const createTaskSchema = {
+  properties: {
+    workspace_id: { type: "string" },
+    title: { type: "string", maxLength: 60 },
+    prompt: { type: "string" },
+    local_path: { type: "string" },
+    repository_id: { type: "string" },
+    repository_url: { type: "string" },
+    parent_id: { type: "string" },
+    start_agent: { type: "boolean" },
+  },
+};
+
+test("normalizeExternalMcpArgs applies only to the base Kandev create_task tool", () => {
+  const args = { title: "Keep", description: "Old", priority: "high" };
+  assert.equal(normalizeExternalMcpArgs("other", args, createTaskSchema), args);
+  assert.equal(normalizeExternalMcpArgs("kandev-vm104_create_task_kandev", args, createTaskSchema), args);
+});
+
+test("normalizeCreateTaskKandev preserves non-plain arguments", () => {
+  const list = [];
+  assert.equal(normalizeCreateTaskKandev(null, createTaskSchema), null);
+  assert.equal(normalizeCreateTaskKandev(list, createTaskSchema), list);
+});
+
+test("normalizeCreateTaskKandev repairs the failing SVC Monitoring Prep call shape", () => {
+  const description = "Read kirks2003/cv, create MCQ Markdown files, commit and push.";
+  const input = {
+    workspace_id: "1f30614b-e0f6-4382-9bf2-89192b6140c8",
+    title: "SVC Monitoring Prep – Multiple-Choice-Fragen für alle Themenbereiche",
+    description,
+    priority: "high",
+    start_agent: false,
+  };
+  const out = normalizeCreateTaskKandev(input, createTaskSchema, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+
+  assert.equal(out.prompt, description);
+  assert.equal(out.description, undefined);
+  assert.equal(out.priority, undefined);
+  assert.ok(out.title.startsWith("SVC Monitoring Prep"));
+  assert.ok(out.title.length <= 60);
+  assert.equal(out.local_path, undefined);
+  assert.equal(out.start_agent, false);
+  assert.equal(input.prompt, undefined);
+  assert.equal(input.description, description);
+  assert.equal(input.priority, "high");
+});
+
+test("normalizeCreateTaskKandev keeps an existing prompt while removing unsupported fields", () => {
+  const out = normalizeCreateTaskKandev({
+    title: "Task",
+    prompt: "Keep this",
+    description: "Old",
+    priority: "high",
+  }, createTaskSchema, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+  assert.equal(out.prompt, "Keep this");
+  assert.equal(out.description, undefined);
+  assert.equal(out.priority, undefined);
+});
+
+test("normalizeCreateTaskKandev falls back to the known unsupported priority without a schema", () => {
+  const out = normalizeCreateTaskKandev({
+    workspace_id: "ws",
+    title: "Task",
+    description: "Body",
+    priority: "high",
+  }, undefined, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+  assert.equal(out.prompt, "Body");
+  assert.equal(out.description, undefined);
+  assert.equal(out.priority, undefined);
+  assert.equal(out.workspace_id, "ws");
+  assert.equal(out.local_path, undefined);
+});
+
+test("normalizeCreateTaskKandev does not delete fields when inputSchema.properties is empty", () => {
+  const out = normalizeCreateTaskKandev({
+    workspace_id: "ws",
+    title: "Task",
+    description: "Body",
+    priority: "high",
+  }, { properties: {} }, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+  assert.equal(out.prompt, "Body");
+  assert.equal(out.workspace_id, "ws");
+  assert.equal(out.title, "Task");
+  assert.equal(out.priority, undefined);
+});
+
+test("normalizeCreateTaskKandev removes unknown properties from a populated schema", () => {
+  const out = normalizeCreateTaskKandev({
+    title: "Task",
+    description: "Body",
+    priority: "high",
+    notes: "Drop",
+  }, createTaskSchema, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+  assert.equal(out.priority, undefined);
+  assert.equal(out.notes, undefined);
+  assert.equal(out.prompt, "Body");
+});
+
+test("normalizeCreateTaskKandev truncates title according to the live inputSchema maxLength", () => {
+  const out = normalizeCreateTaskKandev({
+    title: "abcdefghij",
+    description: "",
+  }, { properties: { title: { maxLength: 4 } } }, {
+    localRepoBase: "/definitely-missing",
+    fsModule: missingFs(),
+  });
+  assert.equal(out.title, "abcd");
+});
+
+test("normalizeCreateTaskKandev infers the single local repository from the prompt", () => {
+  const base = "/tmp/jarvis-normalize-test";
+  const workspace = "ws";
+  const fsModule = repoFs(base, workspace, ["kirks2003/cv"]);
+  const out = normalizeCreateTaskKandev({
+    workspace_id: workspace,
+    title: "Update cv",
+    description: "Please update kirks2003/cv",
+    priority: "high",
+  }, createTaskSchema, { localRepoBase: base, fsModule });
+
+  assert.equal(out.local_path, path.join(base, workspace, "github", "kirks2003", "cv"));
+  assert.equal(out.prompt, "Please update kirks2003/cv");
+});
+
+test("normalizeCreateTaskKandev does not infer when multiple local repositories match", () => {
+  const base = "/tmp/jarvis-normalize-test";
+  const workspace = "ws";
+  const fsModule = repoFs(base, workspace, ["kirks2003/cv", "kirks2003/rw_mesh"]);
+  const out = normalizeCreateTaskKandev({
+    workspace_id: workspace,
+    title: "Update",
+    description: "Compare kirks2003/cv with kirks2003/rw_mesh",
+    priority: "high",
+  }, createTaskSchema, { localRepoBase: base, fsModule });
+
+  assert.equal(out.local_path, undefined);
+});
+
+test("inferLocalRepoPath only returns one verifiable local owner/repo match", () => {
+  const base = "/tmp/jarvis-normalize-test";
+  const workspace = "ws";
+  const single = repoFs(base, workspace, ["kirks2003/cv"]);
+  assert.equal(
+    inferLocalRepoPath({ workspaceId: workspace, title: "Update kirks2003/cv", prompt: "", base, fsModule: single }),
+    path.join(base, workspace, "github", "kirks2003", "cv"),
+  );
+  assert.equal(inferLocalRepoPath({ workspaceId: "", title: "Update kirks2003/cv", prompt: "", base, fsModule: single }), "");
+  assert.equal(inferLocalRepoPath({ workspaceId: workspace, title: "Update kirks2003/cv", prompt: "", base, fsModule: missingFs() }), "");
+
+  const ambiguous = repoFs(base, workspace, ["kirks2003/cv", "kirks2003/rw_mesh"]);
+  assert.equal(
+    inferLocalRepoPath({ workspaceId: workspace, title: "Compare kirks2003/cv and kirks2003/rw_mesh", prompt: "", base, fsModule: ambiguous }),
+    "",
+  );
+
+  const numericOwner = repoFs(base, workspace, ["123/cv"]);
+  assert.equal(inferLocalRepoPath({ workspaceId: workspace, title: "Update 123/cv", prompt: "", base, fsModule: numericOwner }), "");
+});
+
+test("normalizeCreateTaskKandev does not infer when an explicit repository locator exists", () => {
+  const base = "/tmp/jarvis-normalize-test";
+  const workspace = "ws";
+  const fsModule = repoFs(base, workspace, ["kirks2003/cv"]);
+
+  const withLocalPath = normalizeCreateTaskKandev({
+    workspace_id: workspace,
+    title: "Update",
+    description: "kirks2003/cv",
+    local_path: "/explicit",
+    priority: "high",
+  }, createTaskSchema, { localRepoBase: base, fsModule });
+  assert.equal(withLocalPath.local_path, "/explicit");
+
+  for (const [key, value] of [
+    ["repository_id", "repo-id"],
+    ["repository_url", "https://github.com/kirks2003/cv"],
+    ["parent_id", "self"],
+  ]) {
+    const out = normalizeCreateTaskKandev({
+      workspace_id: workspace,
+      title: "Update",
+      description: "kirks2003/cv",
+      [key]: value,
+      priority: "high",
+    }, createTaskSchema, { localRepoBase: base, fsModule });
+    assert.equal(out[key], value, key);
+    assert.equal(out.local_path, undefined, `${key} local_path`);
+  }
+});
+
+test("normalizeCreateTaskKandev uses the pre-truncation title for repository inference", () => {
+  const base = "/tmp/jarvis-normalize-test";
+  const workspace = "ws";
+  const fsModule = repoFs(base, workspace, ["kirks2003/cv"]);
+  const longTitle = "SVC Monitoring Prep ".repeat(3) + "kirks2003/cv";
+  const out = normalizeCreateTaskKandev({
+    workspace_id: workspace,
+    title: longTitle,
+    description: "",
+  }, createTaskSchema, { localRepoBase: base, fsModule });
+
+  assert.ok(out.title.length <= 60);
+  assert.equal(out.local_path, path.join(base, workspace, "github", "kirks2003", "cv"));
+});

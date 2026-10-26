@@ -1,0 +1,433 @@
+// Pure helpers for the web-search engines: markup parsing, redirect-URL
+// unwrapping and result merging. No network code here, so the unit tests run
+// without internet (the MCP server in websearch.mjs owns the fetches).
+import { BASELINE_FEEDS } from "./news-feeds.mjs";
+
+// A bare user-agent is the classic bot tell: real Chrome sends a full header
+// set, and a language-aware Accept-Language is what makes German queries
+// return German results. navigation=true mirrors a document load (top-level
+// search page); navigation=false a subresource fetch (RSS/redirect follow).
+// Measured from the production IP: a full set does not change an already
+// accepted request, but it is the shape of a normal user request.
+export function browserHeaders(lang = "de", navigation = false) {
+  const headers = {
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "accept-language": lang === "en" ? "en-US,en;q=0.9" : "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+    "accept-encoding": "gzip, deflate, br",
+    "sec-ch-ua": '"Chromium";v="143", "Not A(Brand";v="24", "Google Chrome";v="143"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+    "sec-fetch-dest": navigation ? "document" : "empty",
+    "sec-fetch-mode": navigation ? "navigate" : "cors",
+    "sec-fetch-site": "none",
+    "priority": navigation ? "u=0,i" : "u=1,i",
+  };
+  if (navigation) {
+    headers.accept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+    headers["sec-fetch-user"] = "?1";
+    headers["upgrade-insecure-requests"] = "1";
+  } else {
+    headers.accept = "*/*";
+  }
+  return headers;
+}
+
+export function cleanHtml(html) {
+  return String(html)
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// href attributes arrive HTML-encoded (&amp; and friends) before URL parsing.
+function unescapeHref(href) {
+  return String(href || "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'");
+}
+
+// DuckDuckGo result links are redirect URLs like //duckduckgo.com/l/?uddg=<encoded>;
+// unwrap them to the real target. Anything that stays on duckduckgo.com after
+// the unwrap (ad links like duckduckgo.com/y.js?ad_..., failed redirects) is
+// not a result and comes back as "".
+export function decodeDuckDuckGoHref(href) {
+  href = unescapeHref(href);
+  if (!href) return "";
+  if (href.startsWith("//")) href = `https:${href}`;
+  try {
+    const url = new URL(href);
+    // Ads are double-wrapped: /l/?uddg=<encoded duckduckgo.com/y.js?ad_...>;
+    // check the final target's hostname, not the redirect's.
+    const finalUrl = url.searchParams.get("uddg") || url.toString();
+    return new URL(finalUrl).hostname.endsWith("duckduckgo.com") ? "" : finalUrl;
+  } catch {
+    return "";
+  }
+}
+
+// Bing result links are redirects like
+// https://www.bing.com/ck/a?!&p=...&u=a1<base64url of the real target>;
+// unwrap the u=a1... parameter to the real URL. Organic results are always
+// wrapped, so a link that stays on bing.com is a failed unwrap and comes back
+// as "".
+export function decodeBingUrl(href) {
+  href = unescapeHref(href);
+  if (!href) return "";
+  if (href.startsWith("//")) href = `https:${href}`;
+  try {
+    const url = new URL(href);
+    const encoded = url.searchParams.get("u");
+    if (encoded && encoded.startsWith("a1")) {
+      const base64 = encoded.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+      return Buffer.from(base64, "base64").toString("utf8");
+    }
+    return url.hostname.endsWith("bing.com") ? "" : url.toString();
+  } catch {
+    return "";
+  }
+}
+
+// Dedupe key: same page from two engines (https://x.com/a/ and
+// http://www.x.com/a) must not count twice.
+export function normalizeUrlForDedupe(url) {
+  try {
+    const parsed = new URL(url);
+    let host = parsed.hostname.toLowerCase();
+    if (host.startsWith("www.")) host = host.slice(4);
+    return `${host}${parsed.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return String(url || "").toLowerCase();
+  }
+}
+
+// Merge the per-engine result sets into one deduplicated list. Round-robin
+// across engines (first result of each, then second, ...) so no single source
+// can crowd the others out of the top N; a URL already taken by an earlier
+// depth is skipped. Each result keeps its engine tag for the brain.
+export function mergeResults(sets, maxResults) {
+  const queues = (sets || [])
+    .map((set) => ({ engine: set.engine, results: (set.results || []).filter((result) => result && result.url) }))
+    .filter((queue) => queue.results.length);
+  const seen = new Set();
+  const merged = [];
+  for (let depth = 0; merged.length < maxResults; depth += 1) {
+    let added = false;
+    for (const queue of queues) {
+      if (merged.length >= maxResults) break;
+      const result = queue.results[depth];
+      if (!result) continue;
+      const key = normalizeUrlForDedupe(result.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push({ ...result, engine: queue.engine });
+      added = true;
+    }
+    if (!added) break;
+  }
+  return merged;
+}
+
+// One text block for the brain: the instant answer (if any) first, then the
+// merged results numbered, each tagged with its source engine.
+export function formatSearchResults(merged, instant) {
+  const sections = [];
+  if (instant) sections.push(`Instant answer (DuckDuckGo):\n${instant}`);
+  for (const [index, result] of (merged || []).entries()) {
+    sections.push(`${index + 1}. [${result.engine}] ${result.title}\n${result.url}\n${result.snippet || ""}`);
+  }
+  return sections.join("\n\n");
+}
+
+// --- News (the web_news tool) -------------------------------------------------
+//
+// Free, keyless RSS/Atom feeds per interest area. Unlike the HTML search
+// endpoints, feeds are built for machine consumers, so they survive
+// datacenter IPs (DuckDuckGo HTML does not — measured from the production
+// server: see DEPLOYMENT.md, "Live web news"). Every feed below was
+// verified reachable from the live server without a bot wall.
+export const INTEREST_FEEDS = {
+  // German tech press.
+  technik: [
+    { source: "heise online", url: "https://www.heise.de/rss/heise-atom.xml", lang: "de" },
+    { source: "Golem", url: "https://rss.golem.de/rss.php?feed=RSS2.0", lang: "de" },
+  ],
+  // English tech press.
+  it: [
+    { source: "Ars Technica", url: "https://feeds.arstechnica.com/arstechnica/index", lang: "en" },
+    { source: "The Verge", url: "https://www.theverge.com/rss/index.xml", lang: "en" },
+    { source: "TechCrunch", url: "https://techcrunch.com/feed/", lang: "en" },
+  ],
+  finance: [
+    { source: "CNBC Top News", url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114", lang: "en" },
+    { source: "MarketWatch", url: "https://feeds.marketwatch.com/marketwatch/topstories/", lang: "en" },
+    { source: "Financial Times", url: "https://www.ft.com/rss/home", lang: "en" },
+  ],
+  geek: [
+    { source: "Hacker News front page", url: "https://hnrss.org/frontpage", lang: "en" },
+    { source: "Lobsters", url: "https://lobste.rs/rss", lang: "en" },
+  ],
+  nerd: [
+    { source: "r/programming", url: "https://www.reddit.com/r/programming/.rss", lang: "en" },
+    { source: "Hacker News front page", url: "https://hnrss.org/frontpage", lang: "en" },
+    { source: "Lobsters", url: "https://lobste.rs/rss", lang: "en" },
+  ],
+};
+
+// --- The built-in websearch source list (the Websearch sources panel) --------
+//
+// The baseline every user's per-user source list is seeded with: one entry
+// per built-in source of the web_search and web_news tools, derived from the
+// code above (the engine endpoints, the two news-search sources, the
+// INTEREST_FEEDS curated feeds and the topic-agnostic BASELINE_FEEDS). `id`
+// is the stable row key the backend stores per user, `source` the display
+// name the panel — and the brain's attribution line — uses, `kind` is
+// engine / news / feed and `tool` the MCP tool the source feeds. A feed is
+// one row per feed URL, carrying every interest area it is curated for
+// (Hacker News and Lobsters are curated for two areas each, so they are one
+// row with both areas, not a duplicate); baseline feeds carry no areas.
+function sourceSlug(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function feedSourceId(feed) {
+  return `feed:${sourceSlug(feed.source)}`;
+}
+
+export const BUILTIN_WEB_SOURCES = [
+  { id: "duckduckgo", source: "DuckDuckGo", kind: "engine", tool: "web_search", url: "https://html.duckduckgo.com/html/" },
+  { id: "bing", source: "Bing", kind: "engine", tool: "web_search", url: "https://www.bing.com/search" },
+  { id: "wikipedia", source: "Wikipedia", kind: "engine", tool: "web_search", url: "https://en.wikipedia.org" },
+  { id: "duckduckgo-instant", source: "DuckDuckGo instant answer", kind: "engine", tool: "web_search", url: "https://api.duckduckgo.com/" },
+  { id: "bing-news", source: "Bing News", kind: "news", tool: "web_news", url: "https://www.bing.com/news/search" },
+  { id: "google-news", source: "Google News", kind: "news", tool: "web_news", url: "https://news.google.com/rss" },
+  ...(() => {
+    const byUrl = new Map();
+    const byId = new Set();
+    for (const [area, feeds] of Object.entries(INTEREST_FEEDS)) {
+      for (const feed of feeds) {
+        const key = normalizeUrlForDedupe(feed.url);
+        const entry = byUrl.get(key);
+        if (entry) {
+          if (!entry.areas.includes(area)) entry.areas.push(area);
+          continue;
+        }
+        const id = feedSourceId(feed);
+        const item = {
+          id,
+          source: feed.source,
+          kind: "feed",
+          tool: "web_news",
+          areas: [area],
+          url: feed.url,
+        };
+        byUrl.set(key, item);
+        byId.add(id);
+      }
+    }
+    for (const feed of BASELINE_FEEDS) {
+      const key = normalizeUrlForDedupe(feed.url);
+      const id = feedSourceId(feed);
+      if (byUrl.has(key) || byId.has(id)) continue;
+      const item = {
+        id,
+        source: feed.source,
+        kind: "feed",
+        tool: "web_news",
+        areas: [],
+        url: feed.url,
+      };
+      byUrl.set(key, item);
+      byId.add(id);
+    }
+    return [...byUrl.values()];
+  })(),
+];
+
+// Interest-area spellings the user (or the brain) is likely to use.
+const TOPIC_ALIASES = {
+  technik: "technik", technologie: "technik", "tech news": "technik",
+  it: "it", "it news": "it", itnews: "it", informatik: "it", tech: "it",
+  finance: "finance", finanzen: "finance", "finance news": "finance",
+  geek: "geek", geeks: "geek",
+  nerd: "nerd", nerds: "nerd",
+};
+
+// Maps a topic to an interest-area key; a concrete topic (e.g. "Home
+// Assistant") comes back as null and is searched as free text.
+export function normalizeTopic(topic) {
+  return TOPIC_ALIASES[String(topic || "").trim().toLowerCase()] || null;
+}
+
+// One <tag>…</tag> value from a feed block (first match), CDATA unwrapped.
+function feedTag(block, name) {
+  const match = block.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, "i"));
+  return match ? match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim() : "";
+}
+
+// <link href="…"/> (Atom) or <link>https://…</link> (RSS), skipping the
+// feed-plumbing links (self/edit/hub/enclosure).
+function feedLink(block) {
+  const selfless = block.replace(/<link[^>]+rel="(?:self|edit|hub|enclosure)"[^>]*\/?>/g, "");
+  const href = selfless.match(/<link[^>]+href="([^"]+)"/);
+  if (href) return unescapeHref(href[1]);
+  const text = selfless.match(/<link[^>]*>([^<]+)<\/link>/);
+  return text ? unescapeHref(text[1].trim()) : "";
+}
+
+// Parses one RSS 2.0 or Atom feed into news items. Tolerant by design: items
+// without a title or link are skipped, markup/CDATA in titles and snippets is
+// stripped, and a missing date comes back as 0 (sorts to the end).
+export function parseFeedItems(xml, source) {
+  const text = String(xml || "");
+  const blocks = text.match(/<item[\s>][\s\S]*?<\/item>/g) || text.match(/<entry[\s>][\s\S]*?<\/entry>/g) || [];
+  const items = [];
+  for (const block of blocks) {
+    const title = feedTag(block, "title");
+    const url = feedLink(block);
+    if (!title || !url) continue;
+    const snippet = cleanHtml(feedTag(block, "description") || feedTag(block, "summary") || feedTag(block, "content")).slice(0, 200);
+    const rawDate = feedTag(block, "pubDate") || feedTag(block, "published") || feedTag(block, "updated") || feedTag(block, "dc:date");
+    const time = Date.parse(rawDate);
+    items.push({ title: cleanHtml(title), url, snippet, source, date: Number.isNaN(time) ? 0 : time });
+  }
+  return items;
+}
+
+// --- Page fetch (the web_fetch tool) -----------------------------------------
+//
+// The brain is prompt-injectable, so a tool that opens arbitrary URLs needs
+// the same boundary thinking as the graph's owner pinning: it may reach the
+// public web as a human browser would, never the internal network (metadata
+// endpoint, the Neo4j container, the app itself).
+
+// Literal-IP ranges that must never be fetched: loopback, private,
+// link-local (169.254/16 is the cloud metadata address), CGNAT,
+// benchmarking and the unspecified block — IPv4 and IPv6 (including
+// IPv4-mapped IPv6, the classic bypass).
+export function isBlockedIp(ip) {
+  if (typeof ip !== "string" || !ip) return true;
+  // IPv6 first: an IPv4-mapped address (::ffff:a.b.c.d) carries dots and
+  // would otherwise fall into the IPv4 branch and fail closed.
+  if (ip.includes(":")) {
+    const v6 = ip.toLowerCase();
+    const mapped = v6.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (mapped) return isBlockedIp(mapped[1]);
+    if (v6 === "::" || v6 === "::1") return true;
+    if (v6.startsWith("fc") || v6.startsWith("fd")) return true; // unique-local
+    if (v6.startsWith("fe8") || v6.startsWith("fe9") || v6.startsWith("fea") || v6.startsWith("feb")) return true; // link-local
+    return false;
+  }
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return true;
+  const [a, b] = parts;
+  return a === 0 || a === 10 || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19));
+}
+
+// A URL the web_fetch tool may open: http/https on a default port (80/443),
+// no credentials in the URL, and — for literal-IP hosts — not in a blocked
+// range. Hostname URLs are additionally DNS-resolved by the caller before the
+// fetch (a hostname can point anywhere). Returns an error string, or null.
+export function isSafeFetchUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ""));
+  } catch {
+    return "not a valid URL";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return `only http/https URLs can be opened (got ${parsed.protocol})`;
+  }
+  if (parsed.username || parsed.password) return "URLs with embedded credentials are not allowed";
+  if (parsed.port && parsed.port !== "80" && parsed.port !== "443") {
+    return `only default ports 80/443 are allowed (got ${parsed.port})`;
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  // Only IP literals are checked here (a dotted hostname is not an IP);
+  // hostname URLs are additionally DNS-resolved by the caller before the
+  // fetch, because a hostname can point anywhere.
+  const isV4Literal = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  if (isV4Literal || host.includes(":")) {
+    if (isBlockedIp(host)) return "that address is on a private/internal network and cannot be opened";
+  }
+  return null;
+}
+
+// Readable text from a page's HTML (the fallback when no browser is
+// available): drop the non-content blocks, take the body, strip tags, decode
+// the common entities, collapse whitespace and cap the length. Pure, so the
+// unit tests run without a page.
+export function htmlToText(html, maxChars = 12000) {
+  let text = String(html || "");
+  text = text
+    .replace(/<head[\s>][\s\S]*?<\/head>/gi, " ")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<template\b[\s\S]*?<\/template>/gi, " ")
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, " ");
+  const body = text.match(/<body\b[^>]*>([\s\S]*)<\/body>/i);
+  if (body) text = body[1];
+  text = cleanHtml(text);
+  const cap = Math.max(200, Number(maxChars) || 12000);
+  return text.length > cap ? `${text.slice(0, cap)}… [truncated]` : text;
+}
+
+// One text block for the brain: newest first, numbered, with source, date and
+// URL per item.
+export function formatNewsItems(items) {
+  return [...(items || [])]
+    .sort((a, b) => b.date - a.date)
+    .map((item, index) => {
+      const when = item.date ? ` (${new Date(item.date).toISOString().slice(0, 10)})` : "";
+      return `${index + 1}. ${item.title} — ${item.source}${when}\n${item.url}\n${item.snippet || ""}`;
+    })
+    .join("\n\n");
+}
+
+// The attribution behind a web result: the site the user will recognise
+// (hostname without the "www." prefix), never the raw URL — the UI renders
+// it as text.
+export function sourceHost(url) {
+  try {
+    let host = new URL(String(url || "")).hostname.toLowerCase();
+    if (host.startsWith("www.")) host = host.slice(4);
+    return host;
+  } catch {
+    return "";
+  }
+}
+
+export function searchSourceNames(merged, maxNames = 6) {
+  const names = [];
+  for (const result of Array.isArray(merged) ? merged : []) {
+    const host = sourceHost(result?.url);
+    if (host && !names.includes(host)) names.push(host);
+    if (names.length >= maxNames) break;
+  }
+  return names;
+}
+
+export function newsSourceNames(items, maxNames = 6) {
+  const names = [];
+  // Newest first, like formatNewsItems, so the first names are the freshest.
+  const ordered = [...(items || [])].sort((a, b) => (b.date || 0) - (a.date || 0));
+  for (const item of ordered) {
+    const source = String(item?.source || "").trim() || sourceHost(item?.url);
+    if (source && !names.includes(source)) names.push(source);
+    if (names.length >= maxNames) break;
+  }
+  return names;
+}

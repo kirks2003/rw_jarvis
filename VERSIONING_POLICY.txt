@@ -1,0 +1,25 @@
+Jarvis Versioning & Deployment Policy
+=====================================
+
+Scope
+- Applies to the private Jarvis stack running on:
+  1) vm104
+  2) gra-1 DR
+  3) lim-1 DR
+
+Version rule
+- For every shipped Jarvis change (including small fixes), increment:
+  APP_RELEASE_VERSION in server.js
+- Format: YYYY.MM.DD-N
+  - YYYY.MM.DD = deployment date
+  - N = same-day sequence (1, 2, 3, ...)
+
+Deployment rule
+- Deploy each version bump to all 3 containers in lockstep.
+- Rebuild + recreate jarvis service on each target.
+- Verify /api/health returns:
+  - ok: true
+  - appVersion equals the new APP_RELEASE_VERSION
+
+No-skip rule
+- Do not reuse the same appVersion for a newly deployed code change.

@@ -1,0 +1,2219 @@
+:root {
+  color-scheme: dark;
+  --app-font-size: 82.944%;
+  --app-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --bg: #030812;
+  --panel-base-rgb: 11, 23, 39;
+  --panel-opacity: 0.82;
+  --panel: rgba(var(--panel-base-rgb), var(--panel-opacity));
+  --text: #d8f3ff;
+  --muted: #77a9bf;
+  --cyan: #42d9ff;
+  /* The bluer role shade in the Conversation panel: a little bluer and
+     darker than --text so the two roles read apart at a glance. Answers
+     carry it, prompts keep --text. */
+  --accent-text: #9fc0f0;
+  --green: #2dffbf;
+  --amber: #ffc04d;
+  --blue: #4d8dff;
+  --purple: #b088ff;
+  --red: #ff4c6a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: var(--app-font-size);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 20% 20%, rgba(66, 217, 255, 0.13), transparent 30%),
+    radial-gradient(circle at 80% 10%, rgba(45, 255, 191, 0.08), transparent 26%),
+    linear-gradient(135deg, #02050b, var(--bg));
+  font-family: var(--app-font-family);
+}
+
+.shell {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 28px;
+}
+
+/* Multi-user: the whole app shell stays hidden until the session is
+   confirmed (a successful /api/config); then only the login panel is hidden. */
+body:not(.authenticated) .app-ui {
+  display: none;
+}
+
+.login-panel {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  width: min(282px, 100%);
+  margin: 10vh auto 0;
+  padding: 22px 19px;
+  border: 1px solid rgba(66, 217, 255, 0.3);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 30px 120px rgba(0, 0, 0, 0.4);
+  text-align: center;
+}
+
+.login-panel[hidden] {
+  display: none;
+}
+
+.login-panel h1 {
+  margin: 0;
+  font-size: 2.4rem;
+  letter-spacing: 0.1em;
+}
+
+.login-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.login-form {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+  text-align: left;
+}
+
+.login-form label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.login-form input {
+  border: 1px solid rgba(66, 217, 255, 0.35);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: #02050b;
+  font: inherit;
+}
+
+.login-form button {
+  margin-top: 10px;
+}
+
+.login-status {
+  margin: 8px 0 0;
+  min-height: 1.2em;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.login-status.error {
+  color: #ff9a9a;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.user-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.user-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sign-out {
+  color: var(--muted);
+  background: rgba(2, 5, 11, 0.4);
+}
+
+.sign-out:hover {
+  color: var(--text);
+}
+
+.hero, .controls, .transcript {
+  display: grid;
+  gap: 18px;
+}
+
+/* Two columns on top (animation + state), then a full-width costs row below.
+   This keeps costs compact and readable while spanning 100% width. */
+.hero {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+  align-items: stretch;
+  min-height: 196px;
+  margin-bottom: 18px;
+}
+
+/* Free (no box): the animation floats centered in the left column with no
+   panel border or background — the pre-panel look, beside the borderless
+   state text. */
+.core-wrap {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  align-content: center;
+}
+
+.core {
+  --stage-color: var(--cyan);
+  position: relative;
+  /* Rings, reactor and the viewBox-scaled waveform all follow this size.
+     ~30% bigger than the original 110px (110 * 1.3 = 143). */
+  width: 143px;
+  height: 143px;
+  margin: 0;
+  border-radius: 50%;
+  filter: brightness(calc(1 + var(--audio-level, 0) * 0.35));
+  transition: filter 120ms ease;
+}
+
+.ring, .reactor {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.ring-a {
+  border: 2px dashed var(--cyan);
+  box-shadow: 0 0 34px rgba(66, 217, 255, 0.5), inset 0 0 30px rgba(66, 217, 255, 0.16);
+}
+
+.ring-b {
+  inset: 12.5%;
+  border: 2px dashed rgba(216, 243, 255, 0.5);
+  animation: spin-reverse 26s linear infinite;
+}
+
+.reactor {
+  inset: 32.5%;
+  background: radial-gradient(circle, #eaffff, var(--stage-color) 34%, transparent 70%);
+  box-shadow: 0 0 calc(48px + var(--audio-level, 0) * 140px) var(--stage-color);
+  transform: scale(calc(1 + var(--audio-level, 0) * 0.55));
+}
+
+.waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.waveform line {
+  stroke: var(--stage-color);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.95;
+  transition: stroke 200ms ease;
+}
+
+.waveform .level-ring {
+  fill: none;
+  stroke: var(--stage-color);
+  stroke-width: 6;
+  stroke-linecap: round;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 8px var(--stage-color));
+  transition: stroke 200ms ease;
+}
+
+.level-readout {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  font-variant-numeric: tabular-nums;
+}
+
+.core.prompting, .core.command, .core.recording { --stage-color: var(--green); }
+.core.transcribing { --stage-color: var(--blue); }
+.core.thinking { --stage-color: var(--amber); }
+.core.speaking { --stage-color: var(--purple); }
+.core.error { --stage-color: var(--red); }
+
+.standby .ring-a {
+  animation: pulse 2.2s ease-in-out infinite, spin 30s linear infinite;
+}
+
+.wake .ring-a, .listening .ring-a {
+  animation: spin 5s linear infinite;
+}
+
+.prompting .ring-a {
+  border-color: var(--green);
+  box-shadow: 0 0 48px rgba(45, 255, 191, 0.75), inset 0 0 26px rgba(45, 255, 191, 0.25);
+  animation: pulse 0.45s ease-in-out infinite;
+}
+
+.command .ring-a {
+  border-color: var(--green);
+  box-shadow: 0 0 40px rgba(45, 255, 191, 0.6), inset 0 0 22px rgba(45, 255, 191, 0.2);
+  animation: spin 2.6s linear infinite;
+}
+
+.recording .ring-a {
+  border-color: var(--green);
+  box-shadow: 0 0 40px rgba(45, 255, 191, 0.6), inset 0 0 22px rgba(45, 255, 191, 0.2);
+  animation: spin 1.3s linear infinite;
+}
+
+.transcribing .ring-a {
+  border-color: var(--blue);
+  box-shadow: 0 0 42px rgba(77, 141, 255, 0.65), inset 0 0 22px rgba(77, 141, 255, 0.2);
+  animation: spin 0.7s linear infinite, flicker 0.25s steps(2) infinite;
+}
+
+.thinking .ring-a, .computing .ring-a {
+  border-color: var(--amber);
+  box-shadow: 0 0 42px rgba(255, 192, 77, 0.65), inset 0 0 22px rgba(255, 192, 77, 0.2);
+  animation: spin 0.45s linear infinite, flicker 0.14s steps(2) infinite;
+}
+
+.speaking .ring-a {
+  border-color: var(--purple);
+  box-shadow: 0 0 42px rgba(176, 136, 255, 0.65), inset 0 0 22px rgba(176, 136, 255, 0.2);
+  animation: pulse 0.65s ease-in-out infinite, spin 14s linear infinite;
+}
+
+.error .ring-a {
+  border-color: var(--red);
+  box-shadow: 0 0 42px rgba(255, 76, 106, 0.7);
+  animation: shake 0.45s ease-in-out;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--cyan);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.title-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.title-head-left {
+  display: grid;
+  gap: 4px;
+}
+
+/* Release marker shown in the header for quick post-deploy parity checks. */
+.release-version {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+/* Small "about JARVIS" link in the title row: a quiet pill pointing at the
+   Wikipedia J.A.R.V.I.S. article. */
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  white-space: nowrap;
+  padding: 2px 10px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  border: 1px solid var(--muted);
+  border-radius: 999px;
+}
+
+.about-link:hover,
+.about-link:focus-visible {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+h1 {
+  margin: 0;
+  /* 30% smaller than the base headline scale, on top of the global root
+     font-size that already scales the rest of the page's text. */
+  font-size: clamp(1.68rem, 4.9vw, 4.2rem);
+  line-height: 0.95;
+}
+
+h2 {
+  margin: 0 0 12px;
+  color: var(--cyan);
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#stageDetail {
+  max-width: 760px;
+  color: var(--muted);
+  font-size: 1.15rem;
+}
+
+/* The hero shows the pipeline headline only; operational details live in the
+   pipeline status line and the Live log. Errors and stop messages still use
+   this line, so hide it only when it is empty. */
+#stageDetail:empty {
+  display: none;
+}
+
+.controls {
+  /* One dynamic row: Arm/Stop, the language switch and the per-MCP-server
+     switches, centered as a group relative to the panel's middle. Items wrap
+     to a new centered line when the row no longer fits. */
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+/* One button scale for every pill button: a shared font-size (without it the
+   UA button font applies) and one padding, so no button may be taller or
+   narrower than another. Deliberate exceptions: the `.lang-switch` toggles
+   (a different control type), `.transcript-copy` (70%
+   scale, a compact per-entry action) and `.prompt-field button` (the Send
+   button, compact scale +20%, inside the prompt field bottom-right). */
+button {
+  border: 1px solid rgba(66, 217, 255, 0.4);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: rgba(66, 217, 255, 0.1);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.meter-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meter-head h2 {
+  margin: 0;
+}
+
+.meter-value {
+  color: var(--cyan);
+  font-size: 1.15rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-panel progress {
+  width: 100%;
+  height: 14px;
+}
+
+#silenceLevel {
+  accent-color: var(--green);
+}
+
+.meter-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.meter-panel label {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+#silenceDelay {
+  flex: 1 1 220px;
+  min-width: 0;
+  accent-color: var(--green);
+}
+
+#silenceDelayValue {
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+
+#silenceDelayHelp, #silenceDelayStatus {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.stage-preview {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+.stage-preview h2 {
+  margin: 0;
+}
+
+.stage-preview-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.stage-preview button.active {
+  border-color: var(--cyan);
+  background: rgba(66, 217, 255, 0.25);
+  box-shadow: 0 0 14px rgba(66, 217, 255, 0.35);
+}
+
+.stage-preview-help {
+  margin: 0;
+  color: var(--muted);
+}
+
+.language-control {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+}
+
+.mcp-switches {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px 18px;
+}
+
+.mcp-switches .language-control {
+  grid-area: auto;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+}
+
+#languageStatus, #mcpSwitches p {
+  margin: 0;
+  max-width: 220px;
+  color: var(--muted);
+  /* 0.9rem = the 2026-10-21 owner pass: the MCP server text in the compact
+     panel was enlarged by 20% (0.75rem -> 0.9rem). */
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* Equal space above and below the switch (11px, the page's standard
+   inter-panel gap): the old 4px/10px split left visibly more room under
+   the button than over it. */
+.panels-toggle-row {
+  display: flex;
+  justify-content: center;
+  margin: 11px 0;
+}
+
+#speakStatus {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.lang-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  /* Content-sized with a safe floor: keeps labels on one line, and grows
+     when translated text or custom font scaling needs more room. */
+  min-width: 148px;
+  min-height: 32px;
+  padding: 3px;
+  border: 1px solid rgba(66, 217, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(2, 5, 11, 0.6);
+  cursor: pointer;
+  font: inherit;
+}
+
+.lang-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  white-space: nowrap;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  transition: color 150ms ease;
+}
+
+.lang-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  height: calc(100% - 6px);
+  border-radius: 999px;
+  background: rgba(66, 217, 255, 0.25);
+  box-shadow: 0 0 14px rgba(66, 217, 255, 0.35);
+  transition: transform 200ms ease;
+}
+
+.lang-switch[aria-checked="true"] .lang-knob {
+  transform: translateX(100%);
+}
+
+.lang-switch[aria-checked="false"] .lang-option:first-child,
+.lang-switch[aria-checked="true"] .lang-option:last-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Compact switch for the conversation-panel MCP/language row. */
+.lang-switch-compact {
+  min-width: 104px;
+  min-height: 23px;
+  padding: 2px;
+}
+
+.lang-switch-compact .lang-option {
+  padding: 0 8px;
+  /* 0.744rem = 0.62rem enlarged by 20% (2026-10-21 owner pass, same scale
+     as the MCP server labels and the Send button). */
+  font-size: 0.744rem;
+}
+
+.lang-switch-compact .lang-knob {
+  top: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  height: calc(100% - 4px);
+}
+
+.wake-settings {
+  margin: 11px 0;
+  padding: 11px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+.wake-word-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+#wakeWordInput {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(66, 217, 255, 0.4);
+  border-radius: 12px;
+  color: var(--text);
+  background: #02050b;
+  font: inherit;
+}
+
+#voiceSelect, #aiProfileSelect, #whisperProfileSelect {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(66, 217, 255, 0.4);
+  border-radius: 12px;
+  color: var(--text);
+  background: #02050b;
+  font: inherit;
+}
+
+.endpoint-settings h2 {
+  margin: 0 0 10px;
+}
+
+.endpoint-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(220px, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.endpoint-grid p {
+  grid-column: 2;
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.endpoint-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.endpoint-select select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Green/red connection-test LED next to each endpoint selector: neutral
+   gray while unknown, amber while the test runs, green on success,
+   red on failure. */
+.endpoint-led {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.endpoint-led.testing {
+  background: #f59e0b;
+}
+
+.endpoint-led.ok {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
+}
+
+.endpoint-led.fail {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.8);
+}
+
+.endpoint-help {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+#voiceSpeed {
+  flex: 1 1 220px;
+  min-width: 0;
+  accent-color: var(--cyan);
+}
+
+#voiceSpeedValue {
+  color: var(--cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+#wakeWordHelp, #wakeWordStatus, #voiceHelp, #voiceStatus {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+progress {
+  width: 100%;
+  accent-color: var(--cyan);
+}
+
+.transcript {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The conversation panel. Deliberately NOT
+   `.transcript > div`: that also matched the History slider's own
+   `.transcript-controls` div and gave the slider the panel's border and
+   min-height, which pushed the conversation off the first screen. */
+.transcript-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  gap: 10px;
+  align-content: start;
+  /* 560 * 0.8 * 0.8 * 0.75 — the 2026-10-19 owner pass scales the panel to
+      75% of its previous vertical size; font sizes are unchanged. The
+      2026-10-21 owner pass makes the panel ~10% taller (269px -> 296px),
+      and the follow-up pass makes the conversation history area >= 15%
+      taller (296px -> 341px floor, list 77/306 -> 89/352). */
+  min-height: 341px;
+  padding: 11px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.24);
+}
+
+/* The History days slider lives beside Send so the conversation itself stays
+   one continuous panel. */
+.transcript-controls {
+  display: grid;
+  gap: 4px;
+  min-width: min(260px, 100%);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.transcript-controls input[type="range"] {
+  width: 100%;
+  accent-color: var(--cyan);
+}
+
+.transcript-controls p {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+/* The conversation history: every finished turn of this user, oldest
+   first, scrollable inside the panel with a visible scrollbar (the window
+   is the History slider's day count, see /api/conversation in server.js). */
+.transcript-list {
+ /* 250% taller than before (46px / 182px), two 80% shrink passes
+      (161/637 -> 129/510 -> 103/408), then the 2026-10-19 owner pass scales
+      the list to 75% (103/408 -> 77/306) with the font size unchanged. The
+      2026-10-21 follow-up pass makes the history area >= 15% taller
+      (77/306 -> 89/352). */
+  min-height: 89px;
+  /* 2026-10-21 (later) owner request: the history/answer field carries the
+      same mouse resize grip as the prompt textarea (resize: vertical below).
+      The old 352px cap became a floor for the cap instead of a wall:
+      max(352px, 70vh) keeps the old value on short windows and lets the
+      field grow to 70vh of the viewport on normal ones, so dragging the
+      grip actually enlarges the field. min-height is the shrink floor.
+      2026-10-21 follow-up: the owner wanted 30% more vertical headroom,
+       so both cap floors grew 30% (352px -> 458px, 70vh -> 91vh).
+       2026-10-21 (later still) owner request: the answer panel opens at
+       HALF its cap by default, and the grip position is remembered per
+       browser (localStorage, see rememberResizeHeight in app.js) — so the
+       cap lives in a custom property the default height divides, and the
+       inline style set by the grip (or restored from storage) overrides
+       the CSS default while staying inside min/max. */
+   --transcript-list-max: max(458px, 91vh);
+   height: calc(var(--transcript-list-max) / 2);
+    max-height: var(--transcript-list-max);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-content: start;
+  overflow-y: auto;
+  resize: vertical;
+  overflow-wrap: anywhere;
+  padding: 2px;
+  /* Always-visible scrollbar: the history can run to days of entries, so the
+     bar is the affordance that says "scroll back". Deliberately no
+     `scrollbar-width`: with it, Chromium rendered an overlay bar that took
+     0 layout width and faded out at rest (measured), so there was no
+     scrollbar to see. `scrollbar-color` gives a classic, laid-out bar in
+     both Chromium and Firefox, and `scrollbar-gutter: stable` reserves its
+     track so the text never reflows. The ::-webkit-scrollbar rules below
+     are the fallback for engines without `scrollbar-color` (older Safari);
+     Chromium ignores them once `scrollbar-color` is set. */
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--muted) rgba(3, 8, 18, 0.4);
+}
+
+.transcript-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.transcript-list::-webkit-scrollbar-track {
+  background: rgba(3, 8, 18, 0.4);
+  border-radius: 8px;
+}
+
+.transcript-list::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 8px;
+}
+
+.transcript-list::-webkit-scrollbar-thumb:hover {
+  background: var(--cyan);
+}
+
+.transcript-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  max-width: min(860px, 100%);
+}
+
+/* The 2026-10-21 >= 15% history-height pass scales the panels-off values
+   the same way (538 -> 619, 154 -> 178, 612 -> 704). */
+body.panels-off .transcript-panel {
+  min-height: 619px;
+}
+
+body.panels-off .transcript-list {
+  min-height: 178px;
+  /* Same 2026-10-21 (later) resize pass: the old 704px cap becomes a floor
+      for the cap (max(704px, 85vh)) so the grip can enlarge the field on
+      taller screens while short windows keep the old value. 2026-10-21
+       follow-up: the +30% headroom pass grew both floors (704px -> 915px,
+       85vh -> 110vh). 2026-10-21 (later still): the same half-cap default
+       applies to the panels-off cap (see the base rule). */
+   --transcript-list-max: max(915px, 110vh);
+   height: calc(var(--transcript-list-max) / 2);
+    max-height: var(--transcript-list-max);
+}
+
+/* Prompts ("You") sit on the right in the standard --text color; answers
+   ("Jarvis") stay left-aligned and carry the bluer --accent-text shade. */
+.transcript-entry-prompt {
+  justify-self: end;
+  text-align: right;
+}
+
+.transcript-time {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+/* The timestamp row also carries the answer's source attribution tag
+   (web search / graph) to the right of "… · Jarvis". */
+.transcript-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.transcript-entry-prompt .transcript-head {
+  justify-content: flex-end;
+}
+
+.transcript-source {
+  color: var(--accent-text);
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid rgba(66, 217, 255, 0.25);
+  border-radius: 3px;
+  padding: 1px 5px;
+  opacity: 0.9;
+}
+
+.transcript-body {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Answers get the bluer --accent-text shade; prompts keep --text, so the two
+   roles are distinguishable at a glance in the history list. The timestamp
+   stays muted either way (its own rule). */
+.transcript-entry-answer .transcript-body {
+  color: var(--accent-text);
+}
+
+/* The per-entry Copy button: 70% of the standard button scale (font AND
+   padding, so the whole graphic scales: 0.9rem → 0.63rem, 8px 14px →
+   5.6px 9.8px), styled as a muted secondary action. It sits under its text
+   block — left for answers, right for prompts (matching the entry's
+   alignment) — and stays as wide as its own label plus padding (grid items
+   stretch by default, so the explicit justify-self keeps it from filling
+   the entry's full width). */
+.transcript-copy {
+  justify-self: start;
+  padding: 5.6px 9.8px;
+  font-size: 0.63rem;
+  border-color: rgba(66, 217, 255, 0.25);
+  background: transparent;
+  color: var(--muted);
+}
+
+.transcript-copy:hover {
+  color: var(--text);
+}
+
+.transcript-entry-prompt .transcript-copy {
+  justify-self: end;
+}
+
+.transcript-body.pending {
+  min-height: 1.4em;
+}
+
+/* One-cell "comet" that orbits the cell while the brain works (frames are
+   cycled by app.js; opencode-style). Monospace keeps the advance width
+   constant between frames; the amber matches the hero core's thinking
+   stage. Reduced motion gets a static quadrant (no orbiting in JS). */
+.thinking-char {
+  display: inline-block;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  line-height: 1;
+  color: var(--amber);
+  text-shadow: 0 0 8px rgba(255, 192, 77, 0.45);
+}
+
+.thinking-char-head {
+  margin-left: 4px;
+  font-size: 0.75em;
+}
+
+.transcript-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Rendered Markdown inside an answer body (prompts stay pre-wrap verbatim).
+   The body is a <div> whose children are the renderer's block elements. */
+.transcript-entry-answer .transcript-body {
+  white-space: normal;
+}
+.transcript-entry-answer .transcript-body > :first-child { margin-top: 0; }
+.transcript-entry-answer .transcript-body > :last-child { margin-bottom: 0; }
+.transcript-entry-answer .transcript-body p { margin: 0 0 0.5em; }
+.transcript-entry-answer .transcript-body ul,
+.transcript-entry-answer .transcript-body ol { margin: 0 0 0.5em; padding-left: 1.3em; }
+.transcript-entry-answer .transcript-body li { margin: 0.15em 0; }
+.transcript-entry-answer .transcript-body li > ul,
+.transcript-entry-answer .transcript-body li > ol { margin: 0.1em 0; }
+.transcript-entry-answer .transcript-body h1,
+.transcript-entry-answer .transcript-body h2,
+.transcript-entry-answer .transcript-body h3,
+.transcript-entry-answer .transcript-body h4,
+.transcript-entry-answer .transcript-body h5,
+.transcript-entry-answer .transcript-body h6 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.2;
+  color: var(--text);
+}
+.transcript-entry-answer .transcript-body h1 { font-size: 1.18em; }
+.transcript-entry-answer .transcript-body h2 { font-size: 1.1em; }
+.transcript-entry-answer .transcript-body h3 { font-size: 1.04em; }
+.transcript-entry-answer .transcript-body h4,
+.transcript-entry-answer .transcript-body h5,
+.transcript-entry-answer .transcript-body h6 { font-size: 0.98em; }
+.transcript-entry-answer .transcript-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+  background: rgba(66, 217, 255, 0.12);
+  border-radius: 3px;
+  padding: 0.08em 0.35em;
+}
+.transcript-entry-answer .transcript-body pre {
+  margin: 0 0 0.5em;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.30);
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 5px;
+  overflow-x: auto;
+}
+.transcript-entry-answer .transcript-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.84em;
+}
+.transcript-entry-answer .transcript-body pre code .tok.keyword { color: #569cd6; }
+.transcript-entry-answer .transcript-body pre code .tok.string { color: #ce9178; }
+.transcript-entry-answer .transcript-body pre code .tok.comment { color: #6a9955; }
+.transcript-entry-answer .transcript-body pre code .tok.number { color: #b5cea8; }
+.transcript-entry-answer .transcript-body pre code .tok.function { color: #dcdcaa; }
+.transcript-entry-answer .transcript-body pre code .tok.builtin { color: #9cdcfe; }
+.transcript-entry-answer .transcript-body pre code .tok.decorator { color: #c586c0; }
+.transcript-entry-answer .transcript-body pre code .tok.constant { color: #4ec9b0; }
+.transcript-entry-answer .transcript-body blockquote {
+  margin: 0 0 0.5em;
+  padding-left: 0.8em;
+  border-left: 2px solid rgba(66, 217, 255, 0.35);
+  color: var(--muted);
+}
+.transcript-entry-answer .transcript-body a { color: var(--cyan); text-decoration: underline; }
+.transcript-entry-answer .transcript-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 0.5em;
+}
+.transcript-entry-answer .transcript-body th,
+.transcript-entry-answer .transcript-body td {
+  border: 1px solid rgba(66, 217, 255, 0.22);
+  padding: 3px 8px;
+}
+.transcript-entry-answer .transcript-body hr {
+  border: none;
+  border-top: 1px solid rgba(66, 217, 255, 0.2);
+  margin: 0.6em 0;
+}
+
+/* Knowledge graph: third panel inside #panelsBelow, right under the
+   mic level panel (pipeline, then mic level, sit directly below the
+   panels toggle), shown and hidden with the other panels. Display only —
+   the backend is read-only against the graph. */
+.graph-panel {
+  margin: 11px 0;
+  padding: 11px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.24);
+  display: grid;
+  gap: 12px;
+}
+
+.graph-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.graph-head h2 {
+  margin: 0;
+}
+
+/* The entity/link-text size sliders: compact row under the panel head. The
+   scales land on CSS custom properties the 2D SVG and the 3D label layer
+   read (see the calc() rules below). */
+.graph-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 2px 12px 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.graph-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph-controls input[type="range"] {
+  width: 120px;
+}
+
+.graph-controls-help {
+  margin: 2px 12px 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.graph-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 14px;
+  align-items: stretch;
+  --graph-stage-height: 246px;
+}
+
+.graph-canvas-wrap {
+  position: relative;
+}
+
+.graph-canvas {
+  width: 100%;
+  height: var(--graph-stage-height);
+  display: block;
+  border: 1px solid rgba(66, 217, 255, 0.12);
+  border-radius: 8px;
+  background: #02050b;
+}
+
+.graph-canvas[hidden] {
+  display: none;
+}
+
+.graph-canvas circle {
+  cursor: pointer;
+}
+
+/* Relation-type label on a 2D link; the dark outline keeps it readable
+   where it crosses the lines. */
+.graph-canvas .edge-label {
+  /* Scaled by the panel's "Link text" slider (--graph-text-scale). */
+  font-size: calc(5.76px * var(--graph-text-scale, 1));
+  fill: var(--muted);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #02050b;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.graph-views {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.graph-views button {
+  opacity: 0.55;
+}
+
+.graph-views button.active {
+  opacity: 1;
+}
+
+.graph-relevance {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+
+.graph-relevance select {
+  font: inherit;
+  font-size: 0.95em;
+  color: inherit;
+  background: rgba(66, 217, 255, 0.08);
+  border: 1px solid rgba(66, 217, 255, 0.25);
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+/* The live 3D view: the canvas fills the stage, labels float on top. The
+   stage is in normal flow (not absolute) so the wrap always reserves the
+   320 px canvas height — the hidden 2D SVG otherwise contributes none and
+   the stage would paint over the panels below. */
+.graph-3d-stage {
+  position: relative;
+  height: var(--graph-stage-height);
+  border: 1px solid rgba(66, 217, 255, 0.12);
+  border-radius: 8px;
+  background: #02050b;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.graph-3d-stage:active {
+  cursor: grabbing;
+}
+
+.graph-3d-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.graph-3d-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.graph-3d-labels span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* Node names scale with the "Entities" slider (--graph-node-scale). */
+  font-size: calc(6.4px * var(--graph-node-scale, 1));
+  color: var(--muted);
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translate(-50%, -160%);
+}
+
+.graph-3d-labels span.user {
+  color: var(--cyan);
+}
+
+/* Isolated mention (owned, but no fact edge touches it): drawn, but dimmed. */
+.graph-3d-labels span.isolated {
+  opacity: 0.5;
+}
+
+/* Relation-type label floating at a 3D link's midpoint (non-interactive). */
+.graph-3d-labels span.edge {
+  /* Scaled by the panel's "Link text" slider (--graph-text-scale). */
+  font-size: calc(5.12px * var(--graph-text-scale, 1));
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.graph-side {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  height: var(--graph-stage-height);
+  overflow: hidden;
+}
+
+.graph-schema-panel,
+.graph-activity {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+.graph-schema {
+  flex: 1;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  min-height: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.graph-schema-panel h3,
+.graph-activity h3 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.graph-activity-list {
+  flex: 1;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+  overflow: auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.graph-activity-list li {
+  overflow-wrap: anywhere;
+}
+
+.graph-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/* --- Full-size graph page (/graph.html) ------------------------------------
+   Its own tab: a head bar plus a stage that fills the rest of the viewport.
+   The root font-size is 1.5x the app's, and the entity/link-text sliders
+   start at 150%, so both the chrome and the graph itself read larger here. */
+html.graph-full {
+  font-size: 124.416%;
+}
+
+.graph-full-body {
+  display: grid;
+  /* One row per child: head, search, stage, hint. The stage takes the rest —
+     minmax(0, 1fr) and not 1fr, so it may shrink below its content instead of
+     pushing the rows below it off the viewport. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  height: 100vh;
+  padding: 10px 14px 8px;
+  overflow: hidden;
+}
+
+.graph-full-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.graph-full-head h2 {
+  margin: 0;
+}
+
+/* The signed-in account: which world this tab is drawing. Filled by
+   graph-page.js from /api/config; empty (and thus collapsed) when the tab
+   is signed out. */
+.graph-user {
+  padding: 2px 10px;
+  border: 1px solid rgba(66, 217, 255, 0.25);
+  border-radius: 999px;
+  color: var(--cyan);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.graph-user:empty {
+  display: none;
+}
+
+.graph-full-head .graph-controls {
+  padding: 0;
+  margin-left: auto;
+}
+
+.graph-full-back {
+  color: var(--cyan);
+  font-size: 0.85rem;
+}
+
+.graph-full-stage-wrap {
+  position: relative;
+  min-height: 0;
+}
+
+/* Both views fill the stage; the hidden one contributes nothing. */
+.graph-full-stage, .graph-full-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: #02050b;
+}
+
+.graph-full-stage {
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.graph-full-stage:active {
+  cursor: grabbing;
+}
+
+.graph-full-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.graph-full-stage[hidden], .graph-full-canvas[hidden] {
+  display: none;
+}
+
+.graph-full-canvas circle {
+  cursor: pointer;
+}
+
+.graph-full-canvas .edge-label {
+  font-size: calc(5.76px * var(--graph-text-scale, 1));
+  fill: var(--muted);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #02050b;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.graph-full-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* The search row: one field over the stage, its results floating on top of
+   the drawing so the graph keeps the full height. */
+.graph-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.graph-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.graph-search input {
+  width: 100%;
+  padding: 7px 11px;
+  border: 1px solid rgba(66, 217, 255, 0.35);
+  border-radius: 999px;
+  color: var(--text);
+  background: #02050b;
+  font: inherit;
+}
+
+.graph-search input:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 12px rgba(66, 217, 255, 0.3);
+}
+
+.graph-search-status {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.graph-search-results {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  width: min(320px, calc(100% - 16px));
+  max-height: calc(100% - 16px);
+  padding: 6px;
+  overflow: auto;
+  border: 1px solid rgba(66, 217, 255, 0.3);
+  border-radius: 11px;
+  background: rgba(2, 5, 11, 0.93);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.graph-search-results[hidden] {
+  display: none;
+}
+
+.graph-search-hit {
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.graph-search-hit:hover, .graph-search-hit:focus-visible {
+  border-color: rgba(66, 217, 255, 0.4);
+  background: rgba(66, 217, 255, 0.12);
+}
+
+/* A link-type hit filters the drawn edges instead of centring the view. */
+.graph-search-hit.link-type {
+  color: var(--cyan);
+}
+
+.graph-search-empty {
+  margin: 0;
+  padding: 5px 9px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Faded by the active search: the 3D labels and the 2D edge captions the
+   query did not match (the node geometry is faded by the renderers). */
+.graph-3d-labels span.dimmed, .edge-label.dimmed {
+  opacity: 0.12;
+}
+
+/* The panel's link to the full-size page, styled like the head's buttons. */
+.graph-full-link {
+  align-self: center;
+  color: var(--cyan);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.manual-prompt {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+/* The prompt field wraps the textarea and the Send button: the button sits
+   inside the input box, bottom-right (2026-10-21 owner pass). */
+.prompt-field {
+  grid-column: 1 / -1;
+  position: relative;
+}
+
+.manual-prompt textarea {
+  width: 100%;
+  border: 1px solid rgba(66, 217, 255, 0.35);
+  border-radius: 12px;
+  /* Extra right/bottom padding keeps typed text clear of the in-field Send
+     button in the bottom-right corner. The 2026-10-21 owner pass halves the
+     field vertically (rows 2 -> 1, padding 10px/42px -> 6px/18px: 84px ->
+     ~41px) while the right padding stays wide enough for the button. */
+  padding: 6px 74px 18px 12px;
+  color: var(--text);
+  /* Theme variable instead of a hardcoded near-black: the a1 white-label
+     theme's generic `textarea` rule loses this specificity fight, so the
+     input must pick up its background from the theme (--panel: dark on the
+     default theme, white on a1). */
+  background: var(--panel);
+  font: inherit;
+  resize: vertical;
+}
+
+/* The Send button sits inside the prompt field, bottom-right, at +20% of
+   the 2026-10-21 compact scale (font 0.62rem -> 0.744rem, padding
+   5px 12px -> 6px 14.4px). Scoped to .prompt-field (the only button there
+   is Send) — a `.manual-prompt button` selector would also hit the MCP and
+   language switches further down the form. */
+.prompt-field button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 6px 14.4px;
+  font-size: 0.744rem;
+}
+
+/* The History day slider sits on its own row below the compact MCP/language
+   row, directly under the mini pipeline (2026-10-21: the old empty Send row
+   between the two is gone). */
+.manual-prompt .transcript-controls {
+  grid-column: 1 / -1;
+}
+
+/* The compact MCP/language row: MCP master switch, the language switch and
+   one compact switch per MCP server, wrapping as needed. */
+.prompt-mcp-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px 14px;
+}
+
+#mcpMasterStatus {
+  margin: 0;
+  max-width: 160px;
+  color: var(--muted);
+  /* 0.9rem = +20% with the rest of the compact MCP row (2026-10-21). */
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* The mini pipeline spans the composer row above the History slider:
+   one small rectangle per stage, side by side (left to right), each
+   carrying its own state color exactly like the full pipeline panel
+   (#steps) — all six states are visible at once, not just the active one. */
+.pipeline-mini {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(66, 217, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(2, 5, 11, 0.5);
+}
+
+.pipeline-mini-stage {
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid rgba(120, 138, 153, 0.28);
+  border-radius: 7px;
+  background: rgba(2, 5, 11, 0.35);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+
+/* State colors mirror the full pipeline panel (#steps li.*). */
+.pipeline-mini-stage[data-state="active"] {
+  border-color: rgba(255, 192, 77, 0.5);
+  box-shadow: 0 0 18px rgba(255, 192, 77, 0.22);
+  color: var(--amber);
+}
+
+.pipeline-mini-stage[data-state="done"] {
+  border-color: rgba(45, 255, 191, 0.5);
+  box-shadow: 0 0 18px rgba(45, 255, 191, 0.22);
+  color: var(--green);
+}
+
+.pipeline-mini-stage[data-state="skipped"] {
+  border-color: #789;
+  border-style: dashed;
+  color: #789;
+}
+
+.pipeline-mini-stage[data-state="error"] {
+  border-color: rgba(255, 76, 106, 0.5);
+  box-shadow: 0 0 18px rgba(255, 76, 106, 0.22);
+  color: var(--red);
+}
+
+.panel {
+  min-height: 88px;
+  padding: 11px;
+  border: 1px solid rgba(66, 217, 255, 0.18);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.24);
+}
+
+.pipeline-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.pipeline-header h2 {
+  margin: 0;
+}
+
+.pipeline-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+#steps {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Each step keeps its status as its only class (tests read it), so all state
+   styling hangs off #steps li.<status>. */
+#steps li {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  text-align: center;
+  padding: 9px 5px 8px;
+  border: 1px solid rgba(66, 217, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(2, 5, 11, 0.5);
+}
+
+#steps li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  width: 10px;
+  height: 2px;
+  background: rgba(66, 217, 255, 0.35);
+}
+
+.step-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.step-name {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.step-state {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+#steps li.active {
+  border-color: rgba(255, 192, 77, 0.5);
+  box-shadow: 0 0 18px rgba(255, 192, 77, 0.22);
+}
+
+#steps li.active .step-dot {
+  border-color: var(--amber);
+  border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+
+#steps li.active .step-state {
+  color: var(--amber);
+}
+
+#steps li.done .step-dot {
+  border-color: var(--green);
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(45, 255, 191, 0.5);
+}
+
+#steps li.done .step-name {
+  color: var(--text);
+}
+
+#steps li.done .step-state {
+  color: var(--green);
+}
+
+#steps li.skipped .step-dot {
+  border-color: #789;
+  border-style: dashed;
+}
+
+#steps li.skipped .step-name {
+  color: #789;
+  text-decoration: line-through;
+}
+
+#steps li.skipped .step-state {
+  color: #789;
+}
+
+#steps li.error .step-dot {
+  border-color: var(--red);
+  background: rgba(255, 76, 106, 0.3);
+  box-shadow: 0 0 14px rgba(255, 76, 106, 0.5);
+}
+
+#steps li.error .step-name {
+  color: var(--red);
+}
+
+#steps li.error .step-state {
+  color: var(--red);
+}
+
+.log-panel {
+  margin-top: 18px;
+}
+
+.log-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#log {
+  height: 218px;
+  margin: 0;
+  overflow: auto;
+  color: #b8e8ff;
+  white-space: pre-wrap;
+}
+
+dialog {
+  width: min(358px, calc(100vw - 28px));
+  border: 1px solid rgba(66, 217, 255, 0.35);
+  border-radius: 11px;
+  color: var(--text);
+  background: #07111f;
+}
+
+textarea {
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid rgba(66, 217, 255, 0.35);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--text);
+  background: #02050b;
+}
+
+menu {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes spin-reverse {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes pulse {
+  50% { transform: scale(1.06); opacity: 0.72; }
+}
+
+@keyframes flicker {
+  to { filter: brightness(1.35); }
+}
+
+@keyframes shake {
+  25% { transform: translateX(-7px); }
+  75% { transform: translateX(7px); }
+}
+
+@media (max-width: 780px) {
+  .shell {
+    padding: 16px;
+  }
+
+  .hero, .transcript {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .title-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-link {
+    justify-self: start;
+  }
+
+  .manual-prompt {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-body {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-side {
+    grid-template-rows: auto auto;
+  }
+
+  /* Mobile: the controls list vertically, every item centered in the panel. */
+  .controls {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #steps {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  #steps li:not(:last-child)::after {
+    display: none;
+  }
+
+  .core {
+    width: 85px;
+    height: 85px;
+  }
+
+  .costs-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .appearance-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The History search panel: every knob of the brain's search_history tool,
+   one slider per backend-advertised limit. Same visual language as the other
+   settings panels (.wake-settings), laid out as label / slider / help rows so
+   a long explanation never squeezes its slider. */
+.history-search-intro {
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.history-search-grid {
+  display: grid;
+  gap: 4px 14px;
+}
+
+.history-search-grid label {
+  margin-top: 10px;
+}
+
+.history-search-grid input[type="range"] {
+  width: 100%;
+  max-width: 420px;
+}
+
+.history-search-grid p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0 0 6px;
+}
+
+.history-search-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.history-search-engine {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 6px 0 0;
+}
+
+/* --- Cost panel (OpenRouter + OVHcloud + ElevenLabs) ---------------------- */
+/* Full-width row under the hero's top line. Hidden until /api/costs reports
+   at least one configured section. */
+.costs-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  /* stretch: the sections fill the panel width so the label/value rows span
+     it (no empty band on the right); .costs-updated stays centered via its
+     own align-self. */
+  align-items: stretch;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+#costsPanel[hidden] {
+  display: none;
+}
+
+.costs-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.costs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  text-align: right;
+}
+
+.costs-title {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+}
+
+.costs-grid {
+  margin: 0;
+  display: grid;
+  /* One full-width column: each .costs-row spans the panel width and holds
+     its own label/value pair (see .costs-row below). Stacking rows here
+     instead of using max-content/1fr keeps one row per line. */
+  grid-template-columns: 1fr;
+  gap: 3px;
+  font-size: 0.82rem;
+}
+
+.costs-row {
+  display: grid;
+  /* label (max-content) left, value (1fr, right-aligned) right — the 1fr
+     track shrinks so long values (the OVH AI-usage line) wrap instead of
+     overflowing the fixed 20% column. */
+  grid-template-columns: max-content 1fr;
+  gap: 0 14px;
+}
+
+.costs-grid dt {
+  color: var(--muted);
+}
+
+.costs-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.costs-updated {
+  margin: 0;
+  align-self: center;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.costs-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.costs-refresh {
+  padding: 3px 9px;
+  font-size: 0.74rem;
+  color: var(--muted);
+  background: rgba(2, 5, 11, 0.4);
+}
+
+.voice-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+#voiceProviderStatus {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.appearance-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.appearance-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.appearance-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+}
+
+.appearance-grid label {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.appearance-grid input[type="range"] {
+  width: 100%;
+}
+
+.appearance-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+#appearanceStatus {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* Websearch sources panel: the account's list of search engines, news
+   sources and feeds. Row toggles reuse the lang-switch pill, narrower. */
+.websearch-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.websearch-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.websearch-source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  max-height: 264px;
+  overflow-y: auto;
+}
+
+.websearch-source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 10px;
+  background: rgba(66, 217, 255, 0.06);
+}
+
+.websearch-source-kind {
+  flex: none;
+  width: 52px;
+  text-align: center;
+  padding: 2px 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid rgba(66, 217, 255, 0.25);
+  border-radius: 999px;
+}
+
+.websearch-source-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.websearch-source-toggle {
+  width: 92px;
+  height: 26px;
+}
+
+.websearch-source-toggle .lang-option {
+  font-size: 0.72rem;
+}
+
+.websearch-source-remove {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  color: #ff8f8f;
+  border: 1px solid rgba(255, 92, 92, 0.45);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.websearch-source-remove:hover {
+  background: rgba(255, 92, 92, 0.12);
+}
+
+.websearch-add {
+  display: grid;
+  gap: 8px;
+}
+
+.websearch-add-fields {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 8px 14px;
+  align-items: end;
+}
+
+.websearch-add label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+#websearchStatus {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
