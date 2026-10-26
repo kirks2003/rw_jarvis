@@ -2261,44 +2261,34 @@ function scrollTranscripts() {
   el.conversationText.scrollTop = el.conversationText.scrollHeight;
 }
 
-// Opencode-style one-cell thinking indicator: a single glyph whose lit
-// quadrants orbit the cell clockwise like a small comet (a one-quadrant
-// head with a one-quadrant trail, shedding it for one frame each orbit).
-// Classic block glyphs only, so every browser font renders them; the CSS
-// pins a monospace face so the advance width never jitters between frames.
-// The orbit starts at THINKING_STEP_MS per step and eases to
-// THINKING_SLOW_MS over the following 30 s, so a long think calms down
-// instead of fluttering the whole time.
-const THINKING_FRAMES = ["\u2596", "\u2580", "\u2590", "\u2584", "\u258c"];
-const THINKING_LEVELS = [1, 0.8, 1, 0.8, 1];
-const THINKING_STEP_MS = 70;
-const THINKING_SLOW_MS = 95;
-const THINKING_SLOW_AFTER_MS = 30000;
-const THINKING_SLOW_DURATION_MS = 30000;
+// Opencode-style one-cell thinking indicator: the braille dot spinner from
+// opencode's main session view (the de-facto CLI standard, also the ora
+// default) — 10 braille glyphs cycled at 80 ms with uniform brightness.
+// Braille glyphs are in the basic multilingual plane of every browser font;
+// the CSS pins a monospace face so the advance width never jitters between
+// frames.
+const THINKING_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"];
+const THINKING_STEP_MS = 80;
 
 function createThinkingChar(span) {
   span.textContent = THINKING_FRAMES[0];
-  // Reduced motion: a static quadrant still marks the pending entry, it just
-  // does not orbit.
+  // Reduced motion: a static dot still marks the pending entry, it just
+  // does not spin.
   if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return () => {};
   let index = 0;
   let timer = 0;
   let stopped = false;
-  const startedAt = Date.now();
   const step = () => {
     if (stopped) return;
     index = (index + 1) % THINKING_FRAMES.length;
     span.textContent = THINKING_FRAMES[index];
-    span.style.opacity = THINKING_LEVELS[index];
-    const elapsed = Date.now() - startedAt;
-    const t = Math.min(1, Math.max(0, (elapsed - THINKING_SLOW_AFTER_MS) / THINKING_SLOW_DURATION_MS));
-    timer = setTimeout(step, THINKING_STEP_MS + (THINKING_SLOW_MS - THINKING_STEP_MS) * t);
+    timer = setTimeout(step, THINKING_STEP_MS);
   };
   timer = setTimeout(step, THINKING_STEP_MS);
   return () => { stopped = true; clearTimeout(timer); };
 }
 
-// Stops the orbiting chars and clears them from a pending entry. Called on
+// Stops the spinning chars and clears them from a pending entry. Called on
 // every path that leaves the entry the panel (complete, fail, voice cut),
 // so no timer keeps running against a detached element.
 function disposeThinkingChars(pending) {

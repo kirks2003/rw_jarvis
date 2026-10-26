@@ -958,10 +958,10 @@ body.panels-off .transcript-list {
   min-height: 1.4em;
 }
 
-/* One-cell "comet" that orbits the cell while the brain works (frames are
-   cycled by app.js; opencode-style). Monospace keeps the advance width
-   constant between frames; the amber matches the hero core's thinking
-   stage. Reduced motion gets a static quadrant (no orbiting in JS). */
+/* One-cell thinking spinner shown while the brain works (braille frames
+   cycled by app.js; opencode main-session style). Monospace keeps the
+   advance width constant between frames; the amber matches the hero core's
+   thinking stage. Reduced motion gets a static dot (no spinning in JS). */
 .thinking-char {
   display: inline-block;
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;

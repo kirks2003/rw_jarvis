@@ -129,8 +129,8 @@ Defined via env vars in `.env`. Default profile set by `BRAIN_PROFILE_DEFAULT`.
   character and named voices, plus ElevenLabs provider voices
 - **Thinking line:** while the brain runs, a short deterministic line is
   spoken (`Let me think.` / `Lass mich kurz nachdenken.`, 2026-10-23), and
-  the conversation panel shows a one-cell animated thinking comet in the
-  pending entry (2026-10-26)
+  the conversation panel shows a one-cell animated thinking spinner in the
+   pending entry (braille dots, opencode main-session style; 2026-10-26)
 
 ### 3.4 Wake phrase
 
@@ -275,20 +275,24 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-2`
+- Latest: `2026.10.26-3`
 
 ### 7.1 Release notes
 
+- **`2026.10.26-3` (this repo):** thinking indicator swapped from the
+  one-cell comet to opencode's main-session braille spinner
+  (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ cycled at 80 ms, uniform brightness; the 30 s pacing
+  and per-frame opacity pulse went with it). Rolled out to all three
+  hosts 2026-10-26.
 - **`2026.10.26-2` (this repo):** repo move to `rw_jarvis`; `server.js`
   merged from the 2026-10-24 host backup + the 2026-10-25
   `normalize-external-args` fix (restores the `github-ro` registration,
   ElevenLabs server side and persona-memory wiring that the 2026-10-25
-  deploy had lost); one-cell thinking comet in the conversation panel;
-  test suite updated to the documented 2026-10-23 behavior. **The running
-  containers are still on `2026.10.25-1`** (a strict subset — same
-  frontend, older `server.js` without the restored wiring); deploying
-  `2026.10.26-2` re-enables the env-gated features on hosts whose `.env`
-  carries the vars.
+  deploy had lost); one-cell thinking indicator in the conversation panel
+  (comet, since replaced by `2026.10.26-3`); test suite updated to the
+  documented 2026-10-23 behavior. Rolled out to all three hosts
+  2026-10-26 (re-enabling the env-gated features on hosts whose `.env`
+  carries the vars).
 - **`2026.10.25-1`:** external MCP `create_task_kandev` argument
   normalization.
 - **`2026.10.24-02` (host-only, never in git):** ElevenLabs voice provider
