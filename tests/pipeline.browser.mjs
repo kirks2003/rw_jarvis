@@ -680,7 +680,7 @@ test("the brain token budget slider and text field share one value and ride with
   assert.equal(await page.textContent("#brainBudgetValue"), "32K");
   assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainBudgetK")), "32");
   // A non-numeric entry reverts to the last value; an out-of-range one clamps
-  // to the 1K..2048K window.
+  // to the 1K..512K window.
   await page.evaluate(() => {
     const input = document.getElementById("brainBudgetInput");
     input.value = "abc";
@@ -692,9 +692,9 @@ test("the brain token budget slider and text field share one value and ride with
     input.value = "9999";
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  assert.equal(await page.inputValue("#brainBudgetInput"), "2048");
-  assert.equal(await page.inputValue("#brainBudgetSlider"), "2048");
-  assert.equal(await page.textContent("#brainBudgetValue"), "2048K");
+  assert.equal(await page.inputValue("#brainBudgetInput"), "512");
+  assert.equal(await page.inputValue("#brainBudgetSlider"), "512");
+  assert.equal(await page.textContent("#brainBudgetValue"), "512K");
   // Back to a known value for the pipeline.
   await page.evaluate(() => {
     const input = document.getElementById("brainBudgetInput");

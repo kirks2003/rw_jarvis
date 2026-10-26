@@ -23,6 +23,16 @@ services:
   jarvis:
     build: .
     container_name: jarvis
+    # Rotate the container's log (every console line, including all app
+    # errors) by size so it cannot fill the disk: 5 files x 10 MB = 50 MB
+    # max. This is the Docker-native equivalent of logrotate for a container
+    # log — the host logrotate must NOT also manage this file. View with
+    # `docker logs jarvis` (see AGENTS.md §9.4).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     env_file:
       - .env

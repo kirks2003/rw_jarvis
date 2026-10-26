@@ -73,11 +73,13 @@ const brainTimeoutStorageKey = "jarvis.brainTimeoutMin";
 const brainBudgetStorageKey = "jarvis.brainBudgetK";
 const BRAIN_TIMEOUT_MIN_MINUTES = 1;
 const BRAIN_TIMEOUT_MAX_MINUTES = 600;
-// The brain's per-answer token budget, in K (1K..2048K), from the endpoint
-// panel's slider. Rides with every /api/chat request as brainMaxTokens; the
-// server clamps it to the same window.
+// The brain's per-answer token budget, in K (1K..512K, 1K = 1024 tokens),
+// from the endpoint panel's slider/field. Rides with every /api/chat request
+// as brainMaxTokens; the server clamps it to the same window. The 512K ceiling
+// stays below the default model's total context (deepseek-v4-flash = 1M
+// tokens), so a high value can never 400 on the model's max_model_len.
 const BRAIN_BUDGET_MIN_K = 1;
-const BRAIN_BUDGET_MAX_K = 2048;
+const BRAIN_BUDGET_MAX_K = 512;
 const BRAIN_BUDGET_DEFAULT_K = 4;
 // 2026-10-21 (later still) owner request: the two mouse-resize fields (the
 // history/answer list and the prompt textarea) remember their grip position

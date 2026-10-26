@@ -1278,7 +1278,7 @@ test("brain requests carry a reasoning-safe token budget and an exhausted budget
   mode = "success";
 });
 
-test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K..2048K", async () => {
+test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K..512K", async () => {
   mode = "success";
   const ask = (sessionId, brainMaxTokens) => auth(origin, "/api/chat", {
     method: "POST", headers: { "content-type": "application/json" },
@@ -1292,13 +1292,13 @@ test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K.
   response = await ask("budget-8k", 8192);
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 8192);
-  // Out-of-range values are clamped to the 1K..2048K window.
+  // Out-of-range values are clamped to the 1K..512K window.
   response = await ask("budget-low", 10);
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 1024);
   response = await ask("budget-high", 999999999);
   assert.equal(response.status, 200);
-  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 2048 * 1024);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 512 * 1024);
 });
 
 test("TTS proxy returns upstream audio and reports configuration", async () => {

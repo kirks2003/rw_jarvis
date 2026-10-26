@@ -366,14 +366,14 @@
             <p>How long the brain may work before a “signal timed out” (the server default is 50 s). Long MCP tool runs, for example a Kandev task, need minutes — raise the slider before asking for them.</p>
             <label for="brainBudgetSlider">Brain token budget <output id="brainBudgetValue" for="brainBudgetSlider">4K</output></label>
             <div class="brain-budget-row">
-              <input id="brainBudgetSlider" type="range" min="1" max="2048" step="1" value="4" disabled
-                     title="How many K of tokens the brain may spend on one answer (reasoning + reply). Drag, or type an exact value in the field.">
+              <input id="brainBudgetSlider" type="range" min="1" max="512" step="1" value="4" disabled
+                     title="How many K of tokens (1K = 1024 tokens) the brain may spend on one answer (reasoning + reply). Drag, or type an exact value in the field.">
               <input id="brainBudgetInput" type="text" inputmode="numeric" maxlength="4" value="4" disabled
-                     aria-label="Token budget in K (1 to 2048)"
-                     title="Type a token budget in K (1..2048). Same value as the slider — whichever you set takes effect. Saved in this browser only.">
+                     aria-label="Token budget in K (1 to 512)"
+                     title="Type a token budget in K (1..512, where 1K = 1024 tokens). Same value as the slider — whichever you set takes effect. Saved in this browser only.">
               <span class="brain-budget-unit" aria-hidden="true">K</span>
             </div>
-            <p>How much room the brain has to think and answer, in K of tokens. It is a reasoning model, so a small budget gets spent on thinking and the reply comes back empty (“spent its whole token budget on reasoning”). Raise it for complex asks — drag the slider or type an exact value; the brain-timeout slider above still bounds the time.</p>
+            <p>How much room the brain has to think and answer, in K of tokens (1K = 1024 tokens). It is a reasoning model, so a small budget gets spent on thinking and the reply comes back empty (“spent its whole token budget on reasoning”). Raise it for complex asks — drag the slider or type an exact value. The ceiling (512K) stays safely below the model’s total context (deepseek-v4-flash is 1M tokens); a smaller model needs a lower budget. The brain-timeout slider above still bounds the time.</p>
           </div>
           <p class="endpoint-help">Saved in this browser only. A new selection applies immediately: the LED runs a connection test, and a running pipeline is interrupted and restarted in its last state (Jarvis on/off, speak or text only).</p>
         </section>

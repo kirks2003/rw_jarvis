@@ -121,13 +121,17 @@ Kandev task) no longer end in a "signal timed out".
 per-answer `max_tokens` covers its thinking tokens too — an undersized
 budget is spent on reasoning and the reply comes back empty
 (`finish_reason "length"`, "The brain spent its whole token budget on
-reasoning"). The endpoint panel's **Brain token budget** control (a 1K–2048K
-slider plus a text field for exact values; both hold the same K and whichever
-is set takes effect, saved per browser) rides with each `/api/chat` as
-`brainMaxTokens`; the server clamps it to that window and uses it as
-`max_tokens` (default `BRAIN_MAX_TOKENS` env, 4096). It bounds the *tokens*,
-not the time — the Brain timeout slider above still bounds the wall clock, so
-the two work together: a bigger budget needs enough time to generate.
+reasoning"). The endpoint panel's **Brain token budget** control (a 1K–512K
+slider plus a text field for exact values; both hold the same K, where
+1K = 1024 *tokens*, and whichever is set takes effect, saved per browser)
+rides with each `/api/chat` as `brainMaxTokens`; the server clamps it to that
+window and uses it as `max_tokens` (default `BRAIN_MAX_TOKENS` env, 4096).
+The 512K ceiling stays below the default model's total context
+(deepseek-v4-flash `max_model_len` = 1,000,000) so a high value can never
+400 on "max_tokens ... greater than max_model_len"; a smaller-context model
+needs a lower budget. It bounds the *tokens*, not the time — the Brain
+timeout slider above still bounds the wall clock, so the two work together: a
+bigger budget needs enough time to generate.
 
 **Per-user persona (2026-10-26):** the assistant's persona is no longer a
 single hardcoded butler. Each owner can store their own personality in the
@@ -325,10 +329,22 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
- - Latest: `2026.10.26-8`
+ - Latest: `2026.10.26-9`
  
 ### 7.1 Release notes
  
+- **`2026.10.26-9` (this repo):** two fixes. (1) The brain token budget
+  ceiling was lowered from 2048K to **512K** (1K = 1024 tokens): the old
+  ceiling let a user request more output tokens than the model's total
+  context (deepseek-v4-flash `max_model_len` = 1,000,000), which the model
+  rejects with HTTP 400 "max_tokens ... greater than max_model_len". 512K
+  stays safely below that while leaving room for the prompt, and is still
+  100× more than any answer needs (the model stops when the reply is done;
+  the budget is only a ceiling). (2) The `jarvis` container's log now
+  rotates by size (Docker `json-file` driver, 10 MB × 5 files = 50 MB max)
+  so all app errors persist to a bounded, rotating file — the Docker-native
+  equivalent of logrotate (see §9.4). Rolled out to all three hosts
+  2026-10-26.
 - **`2026.10.26-8` (this repo):** the endpoint panel's **Brain token
   budget** control gained a companion **text field** next to the slider. Both
   hold the same K value and whichever you set takes effect: dragging the
@@ -457,9 +473,26 @@ transcription + real brain cycles).
 7. Verify `/api/health` 200 **and** that `appVersion` equals the new
    `APP_RELEASE_VERSION`
 8. Deploy to **all three** hosts in lockstep, and only changed files — a
-   partial file deploy from an older source tree is how the 2026-10-25
-   regression happened (the host `server.js` was replaced by a git version
-   that lacked uncommitted newer code)
+    partial file deploy from an older source tree is how the 2026-10-25
+    regression happened (the host `server.js` was replaced by a git version
+    that lacked uncommitted newer code)
+
+### 9.4 App log (rotating)
+
+Every app log line (structured JSON: `level` info/warn/error, plus
+requestId/msg/stack) goes to the container's stdout/stderr, which Docker's
+`json-file` logging driver writes to a file and **rotates by size**
+(compose `logging:` on the `jarvis` service: `max-size: 10m`, `max-file: 5`
+= 50 MB max). This is the Docker-native equivalent of logrotate; the host
+`logrotate` must NOT also manage the container log file. All request errors
+(e.g. `Brain HTTP 400 …`) are logged at `level: "error"`.
+
+```bash
+docker logs --tail 200 jarvis                      # recent lines
+docker logs -f jarvis                              # follow
+docker logs jarvis | grep '"level":"error"'        # errors only
+# rotated segments: /var/lib/docker/containers/jarvis/*-json.log*
+```
 
 ---
 

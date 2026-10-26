@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-8").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-9").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -2421,13 +2421,16 @@ function normalizeBrainTimeoutMin(value) {
 }
 
 // The brain's per-answer token budget (max_tokens). The endpoint panel's
-// budget slider sets it per request, clamped to 1K..2048K; the BRAIN_MAX_TOKENS
-// env overrides the 4096 default for deployments. The brain is a reasoning
-// model, so the budget covers its thinking tokens too — an undersized one is
-// spent on reasoning and the reply comes back with empty content
-// (finish_reason "length").
+// budget slider/field sets it per request, clamped to 1K..512K (1K = 1024
+// tokens); the BRAIN_MAX_TOKENS env overrides the 4096 default for
+// deployments. The brain is a reasoning model, so the budget covers its
+// thinking tokens too — an undersized one is spent on reasoning and the reply
+// comes back with empty content (finish_reason "length"). The 512K ceiling
+// stays below the default model's total context (deepseek-v4-flash
+// max_model_len = 1,000,000), so a high value can never 400 on
+// "max_tokens ... greater than max_model_len".
 const BRAIN_MAX_TOKENS_MIN = 1024;
-const BRAIN_MAX_TOKENS_MAX = 2048 * 1024;
+const BRAIN_MAX_TOKENS_MAX = 512 * 1024;
 const BRAIN_MAX_TOKENS_DEFAULT = Math.min(BRAIN_MAX_TOKENS_MAX, Math.max(BRAIN_MAX_TOKENS_MIN, Number(process.env.BRAIN_MAX_TOKENS) || 4096));
 
 function normalizeBrainMaxTokens(value) {
