@@ -4737,3 +4737,75 @@ with no opacity writes and a static first dot under
 **Effect on live data:** none. Panel statics changed, so browsers need a
 hard refresh (Ctrl+Shift+R) to see the braille spinner. All three
 deployments are now at `2026.10.26-3`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-4 — brain-timeout slider + always-animating braille spinner
+
+**Change (user request).** Two fixes to the thinking/timeout UX. (1) The
+braille thinking spinner showed a frozen ⠋ for users with
+`prefers-reduced-motion` — the CSS/JS honored that setting and stopped the
+glyph swap. A clean-Chromium repro against the shipped
+`createThinkingChar` proved all 10 frames cycle at 80 ms when the setting
+is off, so the freeze (not the code) was the cause. Per the owner the
+spinner now always animates: the glyph swap carries no spatial motion, so
+`prefers-reduced-motion` no longer freezes it. (2) Long brain/MCP runs
+(e.g. a Kandev task) died with "Failed: signal timed out" because the brain
+had a fixed 50 s server-side deadline and a 60 s browser request timeout.
+The endpoint panel now has a **Brain timeout** slider (1–600 min, saved per
+browser) that rides with each `/api/chat` as `brainTimeoutMin`; the server
+clamps it to that range and uses it as the overall brain deadline
+(default from the `BRAIN_TIMEOUT_MS` env, 50 s), and the browser waits out
+the same budget client-side (`max(60 s, minutes*60 s + 30 s)`).
+
+**Changed files:** `server.js` (version marker → 2026.10.26-4;
+`BRAIN_TIMEOUT_DEFAULT_MS` from `BRAIN_TIMEOUT_MS` env, default 50000;
+`normalizeBrainTimeoutMin` clamps 1..600 min; `chat()` takes a
+`brainTimeoutMs` arg and passes it as `deadlineMs` to `runBrain` instead of
+the fixed 50000; `/api/chat` handler normalizes `payload.brainTimeoutMin`),
+`public/app.js` (`createThinkingChar` drops the reduced-motion early
+return — always animates; new `brainTimeoutStorageKey`/`brainTimeoutMin`
+state + `applyBrainTimeout` + slider input listener persisting per browser;
+slider enabled in `loadConfig`; `request()` accepts an optional
+`timeoutMs` override of the 60000 default; the `/api/chat` body now sends
+`brainTimeoutMin` and waits
+`max(60000, brainTimeoutMin*60000 + 30000)`), `public/index.html` (slider
+row in the endpoint panel: `brainTimeoutSlider`/`brainTimeoutValue` + help
+line), `public/style.css` (`.endpoint-grid input[type=range]` width and
+`label output` muted styling; spinner comment updated), `.env.example`
+(`BRAIN_TIMEOUT_MS` documented), `tests/server.test.mjs` (`BRAIN_TIMEOUT_MS=2000`
+in the test backend env; mock brain `brainDelayMs` knob; new test asserting
+the default deadline fails a slow brain with "Brain timed out after 2000
+ms" and `brainTimeoutMin:1` lets the same brain pass),
+`tests/pipeline.browser.mjs` (`calls.brainTimeoutMin` capture; new test:
+slider persists per browser, survives reload, and rides with the
+`/api/chat` body as `42`).
+
+**Verification (2026-10-26 ~15:30 UTC, dev worktree):** unit 206/206
+(baseline 205 + 1 deadline test), browser 65 pass / 0 fail / 2 skipped
+(baseline 64 + 1 slider test, the 2 intentional live-vm103 skips).
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-4-20261026T142701Z.tar.gz`,
+  scp `server.js` + `public/app.js` + `public/index.html` +
+  `public/style.css` + both test files, build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.26-4`, in-image md5s match disk
+  and repo (`server.js 896d4e13…`, `public/app.js 4a67fa3c…`,
+  `public/index.html a643e9a6…`, `public/style.css 14d6e9fc…`). Host
+  suites: unit 206/206, browser 65 pass / 0 fail / 2 skipped. (The first
+  scp landed the three `public/` files at the tree root instead of
+  `public/` — root-level `app.js`/`style.css` are pre-existing host debris
+  not in the image; they were re-copied into `public/` and md5-verified
+  before the build, so the image is unaffected.)
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-4-20261026T143329Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-4`, md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-4-20261026T143451Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-4`, md5s identical to vm104.
+
+**Effect on live data:** none. The container restart clears in-memory
+login sessions (the next sign-in re-establishes them, as designed). Panel
+statics changed, so browsers need a hard refresh (Ctrl+Shift+R) to see the
+slider and the always-animating spinner. All three deployments are now at
+`2026.10.26-4`, identical in-image and on disk.

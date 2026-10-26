@@ -351,6 +351,10 @@
               <span id="whisperProfileLed" class="endpoint-led" aria-hidden="true"></span>
             </div>
             <p id="whisperProfileStatus" role="status">Loading Whisper servers.</p>
+            <label for="brainTimeoutSlider">Brain timeout <output id="brainTimeoutValue" for="brainTimeoutSlider">1 min</output></label>
+            <input id="brainTimeoutSlider" type="range" min="1" max="600" step="1" value="1" disabled
+                   title="How long the brain may work on one answer (LLM rounds + MCP tool calls) before the request is cut. Saved in this browser only; it applies to the next request.">
+            <p>How long the brain may work before a “signal timed out” (the server default is 50 s). Long MCP tool runs, for example a Kandev task, need minutes — raise the slider before asking for them.</p>
           </div>
           <p class="endpoint-help">Saved in this browser only. A new selection applies immediately: the LED runs a connection test, and a running pipeline is interrupted and restarted in its last state (Jarvis on/off, speak or text only).</p>
         </section>

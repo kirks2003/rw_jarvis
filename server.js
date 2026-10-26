@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-3").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-4").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -1697,7 +1697,8 @@ const server = http.createServer(async (req, res) => {
       const profile = aiProfileFor(payload.brainProfile);
       if (!profile) return json(res, 503, { error: "brain_not_configured", requestId });
       const result = await chat(prompt, req.user, normalizeLanguage(payload.language) || "en", profile, requestId, controller.signal, normalizeMcpFlags(payload),
-        String(payload.wakePhrase || "").slice(0, 60), req.headers.host, normalizeHistorySettings(payload.historySearch));
+        String(payload.wakePhrase || "").slice(0, 60), req.headers.host, normalizeHistorySettings(payload.historySearch),
+        normalizeBrainTimeoutMin(payload.brainTimeoutMin));
       return json(res, 200, result);
     }
 
@@ -2390,7 +2391,20 @@ function withAbort(promise, signal) {
   });
 }
 
-async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings()) {
+// One overall brain deadline per answer: 50 s by default (BRAIN_TIMEOUT_MS
+// env for deployments with a slow local brain), extendable per request by
+// the endpoint panel's brain-timeout slider, clamped to 1..600 minutes.
+const BRAIN_TIMEOUT_DEFAULT_MS = Number(process.env.BRAIN_TIMEOUT_MS || 50000);
+const BRAIN_TIMEOUT_MIN_MINUTES = 1;
+const BRAIN_TIMEOUT_MAX_MINUTES = 600;
+
+function normalizeBrainTimeoutMin(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return null;
+  return Math.min(BRAIN_TIMEOUT_MAX_MINUTES, Math.max(BRAIN_TIMEOUT_MIN_MINUTES, Math.round(minutes))) * 60000;
+}
+
+async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings(), brainTimeoutMs = null) {
   if (!brainProfile?.configured || String(brainProfile.apiKey).includes("PUT-YOUR")) {
     throw new Error("Brain endpoint/model is not configured");
   }
@@ -2531,10 +2545,12 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
   const headers = { "content-type": "application/json" };
   if (brainProfile.apiKey) headers.authorization = `Bearer ${brainProfile.apiKey}`;
 
-  // One overall deadline, comfortably inside the browser's 60 s request
-  // timeout: the brain may spend it on at most a few tool round-trips.
+  // One overall deadline for the whole run (LLM rounds + tool round-trips):
+  // the browser waits out the same budget (plus margin) client-side, so the
+  // panel's brain-timeout slider can stretch it to 600 minutes for long MCP
+  // tool chains (e.g. a Kandev task) instead of a "signal timed out".
   const { data, webResults, webSources, graphUsed, graphWriteSucceeded } = await runBrain({ messages, brainProfile, user, useTools: Boolean(mcpFlags.graph && graphStore), webTools: Boolean(mcpFlags.websearch), webSourcesList, vikunjaTools, vikunjaClient, vikunjaToolNames, externalMcp: externalMcpEntries, admin: isAdmin(user), lang: language === "de" ? "de" : "en", historySettings, requestId, signal, headers,
-    deadlineMs: 50000 });
+    deadlineMs: brainTimeoutMs ?? BRAIN_TIMEOUT_DEFAULT_MS });
   const answer = extractAnswer(data);
   if (!answer) {
     const finishReason = data?.choices?.[0]?.finish_reason || "";

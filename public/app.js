@@ -22,6 +22,7 @@ const el = Object.fromEntries([
   "voiceProviderSwitch", "voiceProviderStatus",
   "languageSwitch", "languageStatus", "mcpMasterSwitch", "mcpMasterStatus",
   "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
+  "brainTimeoutSlider", "brainTimeoutValue",
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
@@ -67,6 +68,9 @@ const historyDaysStorageKey = "jarvis.historyDays";
 const historySearchStorageKey = "jarvis.historySearch";
 const aiProfileStorageKey = "jarvis.aiProfile";
 const whisperProfileStorageKey = "jarvis.whisperProfile";
+const brainTimeoutStorageKey = "jarvis.brainTimeoutMin";
+const BRAIN_TIMEOUT_MIN_MINUTES = 1;
+const BRAIN_TIMEOUT_MAX_MINUTES = 600;
 // 2026-10-21 (later still) owner request: the two mouse-resize fields (the
 // history/answer list and the prompt textarea) remember their grip position
 // per browser.
@@ -112,6 +116,10 @@ let silenceMs = 1500;
 let panelsVisible = true;
 let aiProfileId = "";
 let whisperProfileId = "";
+// The brain's overall work budget for one answer, in minutes, from the
+// endpoint panel's slider. Rides with every /api/chat request; the server
+// clamps it to the 1..600 minute range.
+let brainTimeoutMin = BRAIN_TIMEOUT_MIN_MINUTES;
 const mcpServers = [];
 const mcpFlags = {};
 let current = null;
@@ -356,6 +364,29 @@ el.whisperProfileSelect.addEventListener("change", () => {
   setWhisperProfile(el.whisperProfileSelect.value, true);
   testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);
   interruptAndResumePipeline("Whisper endpoint changed");
+});
+
+// Brain-timeout slider: how long the brain may work on one answer (LLM
+// rounds + MCP tool calls) before the backend cuts the request. Like the
+// endpoint selectors it is saved per browser; unlike them it changes no
+// running pipeline — it only bounds the NEXT brain request, so no
+// interrupt is needed.
+function applyBrainTimeout(minutes) {
+  const value = Number(minutes);
+  brainTimeoutMin = Number.isFinite(value)
+    ? Math.min(BRAIN_TIMEOUT_MAX_MINUTES, Math.max(BRAIN_TIMEOUT_MIN_MINUTES, Math.round(value)))
+    : BRAIN_TIMEOUT_MIN_MINUTES;
+  el.brainTimeoutSlider.value = String(brainTimeoutMin);
+  el.brainTimeoutValue.textContent = `${brainTimeoutMin} min`;
+}
+
+el.brainTimeoutSlider.addEventListener("input", () => {
+  applyBrainTimeout(el.brainTimeoutSlider.value);
+  try {
+    localStorage.setItem(brainTimeoutStorageKey, String(brainTimeoutMin));
+  } catch (error) {
+    log("settings", "Could not save the brain timeout", { message: error.message });
+  }
 });
 
 // Silence-stop slider: how long the microphone must stay quiet before a
@@ -1672,8 +1703,11 @@ function newSession() {
 
 async function request(session, url, options = {}) {
   check(session);
-  const { signal: external, ...rest } = options;
-  const timeout = AbortSignal.timeout(60000);
+  const { signal: external, timeoutMs, ...rest } = options;
+  // 60 s covers every fast endpoint; the brain request passes a larger
+  // budget derived from the panel's brain-timeout slider (its server-side
+  // deadline plus margin for the pre-brain steps).
+  const timeout = AbortSignal.timeout(timeoutMs || 60000);
   const signals = [session.signal, timeout];
   if (external) signals.push(external);
   const signal = AbortSignal.any(signals);
@@ -2266,15 +2300,14 @@ function scrollTranscripts() {
 // default) — 10 braille glyphs cycled at 80 ms with uniform brightness.
 // Braille glyphs are in the basic multilingual plane of every browser font;
 // the CSS pins a monospace face so the advance width never jitters between
-// frames.
-const THINKING_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"];
+// frames. It always animates (owner requirement 2026-10-26): the glyph swap
+// carries no spatial motion, so the prefers-reduced-motion setting does not
+// freeze it.
+const THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const THINKING_STEP_MS = 80;
 
 function createThinkingChar(span) {
   span.textContent = THINKING_FRAMES[0];
-  // Reduced motion: a static dot still marks the pending entry, it just
-  // does not spin.
-  if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return () => {};
   let index = 0;
   let timer = 0;
   let stopped = false;
@@ -2461,9 +2494,13 @@ async function answer(session, prompt) {
         const data = await request(session, "/api/chat", {
           method: "POST", headers: { "content-type": "application/json" },
           // The brain answers as the wake word's name, so the active phrase
-          // (server default or personal override) travels with every request.
-          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings }),
+          // (server default or personal override) travels with every request;
+          // the panel's brain-timeout slider travels as brainTimeoutMin.
+          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings, brainTimeoutMin }),
           signal: brainSpeech.signal,
+          // Wait out the server-side brain deadline (brainTimeoutMin) plus a
+          // margin for the pre-brain steps (web search, graph context).
+          timeoutMs: Math.max(60000, brainTimeoutMin * 60000 + 30000),
         });
         if (!data.answer) throw new Error("Brain returned no answer");
         return data;
@@ -3439,6 +3476,13 @@ async function loadConfig(userFromLogin) {
     setWhisperProfile(savedWhisperProfile || "gpu-1", false);
     el.aiProfileSelect.disabled = false;
     el.whisperProfileSelect.disabled = false;
+    try {
+      applyBrainTimeout(localStorage.getItem(brainTimeoutStorageKey));
+    } catch (error) {
+      applyBrainTimeout(BRAIN_TIMEOUT_MIN_MINUTES);
+      log("settings", "Could not load the brain timeout", { message: error.message });
+    }
+    el.brainTimeoutSlider.disabled = false;
     // Show the connection state of both active endpoints right away.
     testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
     testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);

@@ -68,7 +68,7 @@ async function setup(t, transcribe, options = {}, pageBrowser = browser) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
-  const calls = { audio: [], prompts: [], speak: [], mcp: undefined, wakePhrase: undefined, maxInFlight: 0 };
+  const calls = { audio: [], prompts: [], speak: [], mcp: undefined, wakePhrase: undefined, brainTimeoutMin: undefined, maxInFlight: 0 };
   let inFlight = 0;
   await page.addInitScript(() => {
     window.testTracks = [];
@@ -148,6 +148,7 @@ async function setup(t, transcribe, options = {}, pageBrowser = browser) {
     calls.prompts.push(payload.prompt);
     calls.mcp = payload.mcp;
     calls.wakePhrase = payload.wakePhrase;
+    calls.brainTimeoutMin = payload.brainTimeoutMin;
     const result = options.chat
       ? await options.chat(calls.prompts.length, payload)
       : { answer: options.answer || "Done.", requestId: "brain-test" };
@@ -609,6 +610,41 @@ test("the command wait slider sets the abort delay and persists per browser", { 
   await page.waitForFunction(() => !document.getElementById("armButton").disabled);
   assert.equal(await page.inputValue("#commandWait"), "500");
   assert.equal(await page.textContent("#commandWaitValue"), "500 ms");
+});
+
+test("the brain timeout slider persists per browser and rides with the chat request", { timeout: 45000 }, async (t) => {
+  const { page, calls } = await setup(t, async (n) => ({
+    text: n === 1 ? "Rocky" : n === 2 ? "" : "What is one plus one?",
+  }), { config: { user: "Roman" } });
+  await page.evaluate(() => { Math.random = () => 0; });
+  // The endpoint panel's slider is enabled once the config arrives (1 min
+  // default).
+  await page.waitForFunction(() => !document.getElementById("brainTimeoutSlider").disabled);
+  assert.equal(await page.inputValue("#brainTimeoutSlider"), "1");
+  assert.equal(await page.textContent("#brainTimeoutValue"), "1 min");
+  // Raise it to 42 minutes; the value label updates and the choice is saved
+  // per browser (no pipeline interrupt needed — it bounds the next brain
+  // request only).
+  await page.evaluate(() => {
+    const slider = document.getElementById("brainTimeoutSlider");
+    slider.value = "42";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  assert.equal(await page.textContent("#brainTimeoutValue"), "42 min");
+  assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainTimeoutMin")), "42");
+  // Utterance 1 is the spoken greeting, 2 the thinking line of the command,
+  // 3 its answer — the answer proves the brain request (with the slider
+  // value) finished.
+  await page.waitForFunction(() => window.savedUtterances.length === 3, null, { timeout: 30000 });
+  await page.click("#stopButton");
+  assert.deepEqual(calls.prompts, ["What is one plus one?"]);
+  assert.equal(calls.brainTimeoutMin, 42);
+  // The saved value survives a reload (stop first so the page starts in
+  // standby, like the command-wait test).
+  await page.reload();
+  await page.waitForFunction(() => !document.getElementById("brainTimeoutSlider").disabled);
+  assert.equal(await page.inputValue("#brainTimeoutSlider"), "42");
+  assert.equal(await page.textContent("#brainTimeoutValue"), "42 min");
 });
 
 test("a command spoken right after the greeting over the echo is captured, not lost", { timeout: 30000 }, async (t) => {

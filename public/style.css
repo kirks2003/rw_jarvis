@@ -678,6 +678,16 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+.endpoint-grid input[type="range"] {
+  width: 100%;
+  max-width: 420px;
+}
+
+.endpoint-grid label output {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
 .endpoint-select {
   display: flex;
   align-items: center;
@@ -961,7 +971,7 @@ body.panels-off .transcript-list {
 /* One-cell thinking spinner shown while the brain works (braille frames
    cycled by app.js; opencode main-session style). Monospace keeps the
    advance width constant between frames; the amber matches the hero core's
-   thinking stage. Reduced motion gets a static dot (no spinning in JS). */
+   thinking stage. */
 .thinking-char {
   display: inline-block;
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;

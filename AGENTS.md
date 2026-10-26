@@ -109,6 +109,14 @@ Defined via env vars in `.env`. Default profile set by `BRAIN_PROFILE_DEFAULT`.
 | OpenRouter | `BRAIN_OPENROUTER_*` | OpenRouter |
 | Claude Code | `BRAIN_CLAUDECODE_*` | Claude Code (via host-side exporter) |
 
+**Brain timeout (2026-10-26):** one overall deadline bounds each brain run
+(LLM rounds + MCP tool round-trips). The default is `BRAIN_TIMEOUT_MS`
+(env, 50 s); the endpoint panel's **Brain timeout** slider (1–600 min,
+saved per browser) rides with each `/api/chat` as `brainTimeoutMin`, the
+server clamps it to that range and uses it instead of the default, and the
+browser waits out the same budget client-side. Long MCP chains (e.g. a
+Kandev task) no longer end in a "signal timed out".
+
 ### 3.2 Whisper (speech-to-text)
 
 | Endpoint | Env prefix | Description |
@@ -130,7 +138,10 @@ Defined via env vars in `.env`. Default profile set by `BRAIN_PROFILE_DEFAULT`.
 - **Thinking line:** while the brain runs, a short deterministic line is
   spoken (`Let me think.` / `Lass mich kurz nachdenken.`, 2026-10-23), and
   the conversation panel shows a one-cell animated thinking spinner in the
-   pending entry (braille dots, opencode main-session style; 2026-10-26)
+  pending entry (braille dots, opencode main-session style; 2026-10-26).
+  The spinner always animates — the `prefers-reduced-motion` freeze was
+  dropped on 2026-10-26 (owner requirement; the glyph swap carries no
+  spatial motion)
 
 ### 3.4 Wake phrase
 
@@ -275,10 +286,20 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-3`
+- Latest: `2026.10.26-4`
 
 ### 7.1 Release notes
 
+- **`2026.10.26-4` (this repo):** the braille thinking spinner now
+  always animates (the `prefers-reduced-motion` freeze was dropped — the
+  glyph swap carries no spatial motion), and the endpoint panel gained a
+  **Brain timeout** slider (1–600 min, saved per browser) that rides with
+  each `/api/chat` request as `brainTimeoutMin`; the server clamps it and
+  uses it as the overall brain deadline (`BRAIN_TIMEOUT_MS` env sets the
+  default, 50 s) instead of a fixed 50 s, and the browser waits out the
+  same budget client-side — long MCP tool runs (e.g. a Kandev task) no
+  longer end in a "signal timed out". Rolled out to all three hosts
+  2026-10-26.
 - **`2026.10.26-3` (this repo):** thinking indicator swapped from the
   one-cell comet to opencode's main-session braille spinner
   (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ cycled at 80 ms, uniform brightness; the 30 s pacing

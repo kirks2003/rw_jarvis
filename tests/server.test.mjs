@@ -13,6 +13,10 @@ import { AudioBufferWindow } from "../public/audio.js";
 
 let upstream, backend, origin, endpoint, speechEndpoint, base;
 let mode = "success";
+// Extra latency (ms) the mock brain adds before answering, so a test can
+// push one request past the brain deadline and another (with the panel's
+// timeout slider) past it.
+let brainDelayMs = 0;
 // The cost-panel billing-API mocks: "down" makes every OpenRouter/OVHcloud
 // billing call fail (503), so the stale-data path of GET /api/costs is
 // testable. Independent of the brain `mode` above.
@@ -174,6 +178,7 @@ before(async () => {
     if (mode === "failure") {
       res.writeHead(503).end('{"error":"unavailable"}');
     } else    if (req.url.endsWith("chat/completions")) {
+      if (brainDelayMs > 0) await setTimeoutPromise(brainDelayMs);
       // The brain request, kept separately from `received` (the last
       // upstream call of any kind): post-turn ingestion calls the same
       // endpoint after the answer is sent, so it would otherwise race the
@@ -369,6 +374,9 @@ async function startBackend(extraEnv) {
       BRAIN_CLAUDECODE_BASE_URL: base,
       BRAIN_CLAUDECODE_API_KEY: "test-claude",
       BRAIN_API_KEY: "",
+      // Fast default brain deadline for the deadline/timeout-slider tests
+      // (production default stays 50 s via BRAIN_TIMEOUT_MS).
+      BRAIN_TIMEOUT_MS: "2000",
       ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -509,6 +517,28 @@ test("the AI selector routes chat to the requested profile", async () => {
   const result = await response.json();
   assert.equal(result.brainProfile, "openrouter");
   assert.equal(JSON.parse(received.toString("utf8")).model, "qwen/qwen3.8-27b");
+});
+
+test("the brain deadline defaults to BRAIN_TIMEOUT_MS and the panel slider extends it", { timeout: 15000 }, async () => {
+  mode = "success";
+  brainDelayMs = 3000;
+  // No slider value: the request runs against the default deadline (2 s in
+  // the test env, 50 s in production). A 3 s brain overshoots it.
+  const failed = await auth(origin, "/api/chat", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "slow brain, default deadline" }),
+  });
+  assert.equal(failed.status, 500);
+  assert.match((await failed.json()).message, /Brain timed out after 2000 ms/);
+  // The endpoint panel's 1-minute timeout (brainTimeoutMin) stretches the
+  // deadline to 60 s, so the same 3 s brain now finishes in time.
+  const ok = await auth(origin, "/api/chat", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "slow brain, panel timeout", brainTimeoutMin: 1 }),
+  });
+  assert.equal(ok.status, 200);
+  assert.ok((await ok.json()).answer);
+  brainDelayMs = 0;
 });
 
 test("the language switch overrides the brain answer language", async () => {
