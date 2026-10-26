@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-10").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-11").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -2720,19 +2720,51 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
 // Five rounds: a schema call plus a few follow-ups is the common pattern.
 const GRAPH_TOOL_ROUNDS = 5;
 // The tool-call round budget is shared by every MCP tool (graph, web, vikunja,
-// github-ro, ssh, …) and is now per-request: the endpoint panel's slider rides
-// as brainToolRounds, clamped to 1..60; the BRAIN_TOOL_ROUNDS env overrides the
-// 5-round default for deployments. The whole run is still bounded by the brain
-// deadline (BRAIN_TIMEOUT_MS / brainTimeoutMin), so a high round count cannot
-// run away.
+// github-ro, ssh, …) and is now per-request: the endpoint panel's slider (or
+// its companion text field) rides as brainToolRounds, clamped to 1..1000; the
+// BRAIN_TOOL_ROUNDS env overrides the 5-round default for deployments. The
+// whole run is still bounded by the brain deadline (BRAIN_TIMEOUT_MS /
+// brainTimeoutMin) and by the model's context window (the context-trim guard
+// below sheds the oldest tool results on a context-overflow 400), so a high
+// round count cannot run away.
 const BRAIN_TOOL_ROUNDS_MIN = 1;
-const BRAIN_TOOL_ROUNDS_MAX = 60;
+const BRAIN_TOOL_ROUNDS_MAX = 1000;
 const BRAIN_TOOL_ROUNDS_DEFAULT = Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Number(process.env.BRAIN_TOOL_ROUNDS) || GRAPH_TOOL_ROUNDS));
 
 function normalizeBrainToolRounds(value) {
   const rounds = Number(value);
   if (!Number.isFinite(rounds)) return null;
   return Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Math.round(rounds)));
+}
+
+// A model-agnostic test for a context-overflow 400: the running message list
+// has outgrown the model's input window. Local (gguf/DeepSeek) endpoints
+// report "max_model_len" in the message; hosted ones use the generic
+// "context length" / "too many tokens" wording. Matched on the body, not the
+// HTTP status alone, so a non-overflow 400 (bad model, bad key) still throws.
+function isContextOverflow(status, text) {
+  if (status !== 400) return false;
+  return /context|maximum context|max_model_len|too many tokens|context_length|input is too long|input exceeds|max tokens/i.test(String(text || ""));
+}
+
+// Shed the OLDEST completed tool exchange — the assistant message that carried
+// a tool_call plus the tool-result messages that answered it — keeping the
+// most recent one. Long tool runs (a high brainToolRounds value) append one
+// tool exchange per round and never trim, so the context grows until it
+// overflows the model window; dropping the oldest exchange frees the space
+// that was read earliest and is least needed for the final answer. Returns
+// true when something was removed (only when ≥2 exchanges exist, so the model
+// always keeps its most recent tool call + result to reason on).
+function trimOldestToolExchange(local) {
+  const starts = [];
+  local.forEach((message, index) => {
+    if (message?.role === "assistant" && Array.isArray(message?.tool_calls) && message.tool_calls.length) starts.push(index);
+  });
+  if (starts.length < 2) return false;
+  const oldest = starts[0];
+  const next = starts[1];
+  local.splice(oldest, next - oldest);
+  return true;
 }
 
 const GRAPH_TOOL_TIMEOUT_MS = 15000;
@@ -3134,16 +3166,29 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
     };
     if (hasTools) body.tools = [...(useTools ? graphTools(admin) : []), ...(webToolsOn ? webTools() : []), ...(vikunjaTools || []), ...externalMcp.flatMap((entry) => entry.openai), ...historyTools()];
     let data;
-    try {
-      const response = await fetch(`${brainProfile.baseUrl}/chat/completions`, {
-        method: "POST", signal: totalSignal, headers, body: JSON.stringify(body),
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`Brain HTTP ${response.status}: ${text.slice(0, 500)}`);
-      data = JSON.parse(text);
-    } catch (error) {
-      if (totalSignal.aborted && !signal.aborted) throw new Error(`Brain timed out after ${deadlineMs} ms`);
-      throw error;
+    for (;;) {
+      let response, text, httpError;
+      try {
+        response = await fetch(`${brainProfile.baseUrl}/chat/completions`, {
+          method: "POST", signal: totalSignal, headers, body: JSON.stringify(body),
+        });
+        text = await response.text();
+        if (!response.ok) httpError = new Error(`Brain HTTP ${response.status}: ${text.slice(0, 500)}`);
+        else data = JSON.parse(text);
+      } catch (error) {
+        if (totalSignal.aborted && !signal.aborted) throw new Error(`Brain timed out after ${deadlineMs} ms`);
+        throw error;
+      }
+      if (httpError) {
+        // The running context outgrew the model's input window: shed the
+        // oldest tool exchange (body.messages is the same array, so the retry
+        // re-serializes it shorter) and retry the same round, so a long tool
+        // run degrades to "less of the early results in context" instead of a
+        // hard 400 that discards the whole answer.
+        if (isContextOverflow(response.status, text) && trimOldestToolExchange(local)) continue;
+        throw httpError;
+      }
+      break;
     }
     const message = data?.choices?.[0]?.message;
     let toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];

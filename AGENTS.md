@@ -141,11 +141,19 @@ shares one per-request budget of **tool-call rounds** — the brain may make at
 most N tool rounds on one answer, after which the backend forces a final
 answer ("Tool budget reached. Answer now from what you have gathered"). The
 default is `GRAPH_TOOL_ROUNDS` = 5 (`BRAIN_TOOL_ROUNDS` env to override); the
-endpoint panel's **Brain tool rounds** slider (1–60, saved per browser) rides
-with each `/api/chat` as `brainToolRounds`, and the server clamps it to that
-range. Multi-step asks ("read this repo and test logins on every host") need
-more than 5 rounds; raise the slider for them. The whole run is still bounded
-by the Brain timeout above, so a high round count cannot run away.
+endpoint panel's **Brain tool rounds** control (a 1–1000 slider plus a text
+field for exact values, saved per browser) rides with each `/api/chat` as
+`brainToolRounds`, and the server clamps it to that range. Multi-step asks
+("read this repo and test logins on every host") need more than 5 rounds;
+raise the slider or type an exact value for them. The whole run is still
+bounded by the Brain timeout above (the time) **and** by the model's context
+window: because the running context only grows (tool results are appended,
+never trimmed), a long run can overflow the model input window, which a model
+rejects with a 400 "maximum context length …" that would otherwise discard the
+whole answer. The **context-trim guard** (2026-10-26) catches that 400, sheds
+the *oldest* tool exchange (the assistant's tool call plus its results) and
+retries the same round, so a high round count degrades to "less of the early
+results in context" and still finishes instead of failing.
 
 **Per-user persona (2026-10-26):** the assistant's persona is no longer a
 single hardcoded butler. Each owner can store their own personality in the
@@ -343,10 +351,28 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
- - Latest: `2026.10.26-10`
- 
+- Latest: `2026.10.26-11`
+  
 ### 7.1 Release notes
   
+- **`2026.10.26-11` (this repo):** two changes to the brain's per-request
+  tool-rounds dial. (1) The **Brain tool rounds** range went up to **1–1000**
+  (was 1–60) and gained a companion **text field** for exact values next to the
+  slider (both hold the same count, whichever you set takes effect, committed
+  on blur/Enter, saved per browser) — a long tool run is easier to type than
+  to drag, and a multi-step ask ("read this repo, then SSH-test logins on
+  every host") can be given many rounds without a code change. (2) A new
+  **context-trim guard** in the brain loop: because the running context only
+  grows (tool results are appended, never trimmed), a long run can overflow
+  the model's input window, which a model rejects with a 400 "maximum context
+  length …" that would otherwise discard the whole answer and all the tool
+  work behind it. The guard catches that specific 400 (matched on the body, so
+  a bad-key/bad-model 400 still errors), sheds the *oldest* tool exchange
+  (the assistant's tool call plus its results, keeping the most recent) and
+  retries the same round — so a high round count degrades to "less of the
+  early results in context" and still finishes. Covered by a unit test (mock
+  brain that 400s on context length) and a browser test (text field + 1000
+  range). Rolled out to all three hosts 2026-10-26.
 - **`2026.10.26-10` (this repo):** two changes to the brain's per-request
   dials. (1) The **Brain token budget** ceiling went back up to **2048K**
   (1K = 1024 tokens) so the panel offers the full range again; the value

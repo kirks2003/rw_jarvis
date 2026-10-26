@@ -697,23 +697,26 @@ button:disabled {
   color: var(--muted);
 }
 
-/* The brain token budget is set by either the slider or the text field; both
-   hold the same K value, so they sit on one row. The text field is a compact
-   numeric input for exact values (e.g. "128"). */
-.brain-budget-row {
+/* A brain dial set by either a slider or a text field: both hold the same
+   value, so they sit on one row. The text field is a compact numeric input for
+   exact values (the token budget in K, the tool-round count). */
+.brain-budget-row,
+.brain-rounds-row {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
 }
 
-.brain-budget-row input[type="range"] {
+.brain-budget-row input[type="range"],
+.brain-rounds-row input[type="range"] {
   flex: 1 1 auto;
   min-width: 80px;
   max-width: none;
 }
 
-.brain-budget-row input[type="text"] {
+.brain-budget-row input[type="text"],
+.brain-rounds-row input[type="text"] {
   flex: none;
   width: 4.5em;
   padding: 6px 8px;
@@ -725,7 +728,8 @@ button:disabled {
   text-align: right;
 }
 
-.brain-budget-unit {
+.brain-budget-unit,
+.brain-rounds-unit {
   flex: none;
   color: var(--muted);
   font-size: 0.85rem;

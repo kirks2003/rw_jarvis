@@ -754,6 +754,39 @@ test("the brain tool-rounds slider persists per browser and rides with the chat 
   assert.equal(await page.textContent("#brainToolRoundsValue"), "20");
 });
 
+test("the brain tool-rounds text field sets an exact value and the range reaches 1000", { timeout: 45000 }, async (t) => {
+  const { page, calls } = await setup(t, async (n) => ({
+    text: n === 1 ? "Rocky" : n === 2 ? "" : "What is one plus one?",
+  }), { config: { user: "Roman" } });
+  await page.evaluate(() => { Math.random = () => 0; });
+  await page.waitForFunction(() => !document.getElementById("brainToolRoundsSlider").disabled);
+  // The slider now reaches 1000 (was 60) so a long tool run can be requested.
+  assert.equal(await page.evaluate(() => document.getElementById("brainToolRoundsSlider").max), "1000");
+  // The exact-value text field sits beside the slider (same row as the budget).
+  assert.ok(await page.$("#brainToolRoundsInput"));
+  // Type a long run into the field and commit on change (blur/Enter); the
+  // slider, the value label and the per-browser storage all follow.
+  await page.evaluate(() => {
+    const field = document.getElementById("brainToolRoundsInput");
+    field.value = "250";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.inputValue("#brainToolRoundsSlider"), "250");
+  assert.equal(await page.textContent("#brainToolRoundsValue"), "250");
+  assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainToolRounds")), "250");
+  // A non-numeric entry reverts to the last value instead of clamping to 1.
+  await page.evaluate(() => {
+    const field = document.getElementById("brainToolRoundsInput");
+    field.value = "abc";
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(await page.textContent("#brainToolRoundsValue"), "250");
+  // The committed value rides with the next brain request.
+  await page.waitForFunction(() => window.savedUtterances.length === 3, null, { timeout: 30000 });
+  await page.click("#stopButton");
+  assert.equal(calls.brainToolRounds, 250);
+});
+
 test("a command spoken right after the greeting over the echo is captured, not lost", { timeout: 30000 }, async (t) => {
   // The user's first command attempt rides the recording window and the
   // completed-utterance transcription drops it (the VAD filter), so the

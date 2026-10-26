@@ -375,9 +375,15 @@
             </div>
             <p>How much room the brain has to think and answer, in K of tokens (1K = 1024 tokens). It is a reasoning model, so a small budget gets spent on thinking and the reply comes back empty (“spent its whole token budget on reasoning”). Raise it for complex asks — drag the slider or type an exact value. You can set up to 2048K; the server caps the value it actually sends at the model’s safe maximum (deepseek-v4-flash is 1M tokens total, so it caps at 512K), so a high value just means “as much as this model can take” and never errors. The brain-timeout slider above still bounds the time.</p>
             <label for="brainToolRoundsSlider">Brain tool rounds <output id="brainToolRoundsValue" for="brainToolRoundsSlider">5</output></label>
-            <input id="brainToolRoundsSlider" type="range" min="1" max="60" step="1" value="5" disabled
-                   title="How many tool-call rounds (MCP calls: github, ssh, graph, web, vikunja) the brain may chain on one answer before it must answer from what it has. Saved in this browser only; it applies to the next request.">
-            <p>How many tool calls the brain may chain in one answer. Reading files, SSH-ing to hosts and graph queries all share this budget, so multi-step asks (“read this repo and test logins on every host”) need more than the default 5 — raise the slider for them. The brain-timeout slider above still bounds the time.</p>
+            <div class="brain-rounds-row">
+              <input id="brainToolRoundsSlider" type="range" min="1" max="1000" step="1" value="5" disabled
+                     title="How many tool-call rounds (MCP calls: github, ssh, graph, web, vikunja) the brain may chain on one answer before it must answer from what it has. Drag, or type an exact value in the field.">
+              <input id="brainToolRoundsInput" type="text" inputmode="numeric" maxlength="4" value="5" disabled
+                     aria-label="Tool-call rounds (1 to 1000)"
+                     title="Type a tool-call round count (1..1000). Same value as the slider — whichever you set takes effect. Saved in this browser only.">
+              <span class="brain-rounds-unit" aria-hidden="true">rounds</span>
+            </div>
+            <p>How many tool calls the brain may chain in one answer. Reading files, SSH-ing to hosts and graph queries all share this budget, so multi-step asks (“read this repo and test logins on every host”) need more than the default 5 — raise the slider or type an exact value for them. The whole run is still bounded by the brain-timeout slider above (the time) and the model’s context window (the server trims the oldest tool results when the context overflows, so a high value degrades instead of failing).</p>
           </div>
           <p class="endpoint-help">Saved in this browser only. A new selection applies immediately: the LED runs a connection test, and a running pipeline is interrupted and restarted in its last state (Jarvis on/off, speak or text only).</p>
         </section>

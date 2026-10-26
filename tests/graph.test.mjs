@@ -1297,6 +1297,12 @@ let toolRequests = [];
 let finalRequests = [];
 let receivedChat;
 let extractionRequests = 0;
+// The mock brain's "Overflow the context" scenario: it 400s once the tool
+// results in the request reach this many, mimicking a model whose input window
+// is smaller than the running tool history. The server's context-trim guard
+// must shed the oldest tool exchange and retry, keeping the context bounded.
+let overflow400s = 0;
+const OVERFLOW_MAX_TOOL_MSGS = 3;
 const MOCK_MCP = fileURLToPath(new URL("./mock-graph-mcp.mjs", import.meta.url));
 const EXTRACT_JSON = JSON.stringify({
   entities: [{ name: "Amelie", type: "person", props: {} }],
@@ -1401,6 +1407,31 @@ before(async () => {
               + "\u003c\uFF5CDSML\uFF5Cparameter name=\"type\" string=\"true\"\u003ething\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
               + "\u003c/\uFF5CDSML\uFF5Cinvoke\u003e"
               + "\u003c/\uFF5CDSML\uFF5Ctool_calls\u003e",
+          },
+        }],
+      }));
+    }
+    // "Overflow the context": until the tool results hit the cap the brain
+    // keeps requesting tools; once they do it 400s on the context length,
+    // driving the server's context-trim guard (trim the oldest exchange, retry
+    // the same round) instead of the run dying with a hard 400.
+    const wantsOverflow = String(lastUser?.content || "").includes("Overflow the context");
+    if (wantsOverflow && body.tools) {
+      const overflowToolMsgs = (body.messages || []).filter((message) => message.role === "tool").length;
+      if (overflowToolMsgs >= OVERFLOW_MAX_TOOL_MSGS) {
+        overflow400s += 1;
+        res.statusCode = 400;
+        return res.end(JSON.stringify({
+          error: { message: "This model's maximum context length is 4096 tokens; you requested 5120 tokens." },
+        }));
+      }
+      toolRequests.push(body);
+      return res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "list-my-knowledge", arguments: "{}" } }],
           },
         }],
       }));
@@ -1840,6 +1871,34 @@ test("the panel's brainToolRounds raises the shared tool budget above the five-r
   const lastRequest = finalRequests[finalRequests.length - 1];
   const toolResults = lastRequest.messages.filter((message) => message.role === "tool");
   assert.equal(toolResults.length, 8, `tool results delivered to the brain: ${toolResults.length}`);
+});
+
+test("the context-trim guard sheds the oldest tool results on a context-overflow 400 instead of failing the run", async () => {
+  const origin = origins[1];
+  const cookie = await login(origin);
+  finalRequests = [];
+  overflow400s = 0;
+  // The mock brain 400s once the tool results reach OVERFLOW_MAX_TOOL_MSGS,
+  // so without the guard the very next round would die with a hard 400 and the
+  // whole answer would be lost. With the guard the server trims the oldest
+  // tool exchange and retries, so a long run degrades to "less early context"
+  // and still finishes.
+  const response = await fetch(`${origin}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ prompt: "Overflow the context", mcp: { graph: true, websearch: false }, brainToolRounds: 8 }),
+  });
+  assert.equal(response.status, 200, "the run completes instead of 500-ing on the context-overflow 400");
+  const result = await response.json();
+  assert.equal(result.answer, "I checked the graph.", "the (raised) budget forces a final answer after the trims");
+  // The overflow path really ran: the mock 400'd at least once and the server
+  // recovered by trimming rather than propagating the error.
+  assert.ok(overflow400s >= 1, `expected the context-overflow 400 to be exercised, got ${overflow400s}`);
+  // The trim kept the context bounded: the final request carried no more tool
+  // results than the model's (tiny) window — with the 8-round budget and no
+  // trimming it would carry all eight.
+  const lastRequest = finalRequests[finalRequests.length - 1];
+  const toolResults = lastRequest.messages.filter((message) => message.role === "tool");
+  assert.ok(toolResults.length <= OVERFLOW_MAX_TOOL_MSGS, `context stayed bounded at ${toolResults.length} tool results`);
 });
 
 test("raw Cypher is not on the tool surface: the old read-cypher call is rejected as unknown", async () => {

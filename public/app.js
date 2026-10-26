@@ -24,7 +24,7 @@ const el = Object.fromEntries([
   "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
   "brainTimeoutSlider", "brainTimeoutValue",
   "brainBudgetSlider", "brainBudgetValue", "brainBudgetInput",
-  "brainToolRoundsSlider", "brainToolRoundsValue",
+  "brainToolRoundsSlider", "brainToolRoundsValue", "brainToolRoundsInput",
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
@@ -84,10 +84,13 @@ const BRAIN_BUDGET_MIN_K = 1;
 const BRAIN_BUDGET_MAX_K = 2048;
 const BRAIN_BUDGET_DEFAULT_K = 4;
 // The brain's per-request tool-call round budget, from the endpoint panel's
-// slider. Shared by every MCP tool (github, ssh, graph, web, vikunja); it
-// rides with every /api/chat request as brainToolRounds, clamped to 1..60.
+// slider (or its companion text field). Shared by every MCP tool (github, ssh,
+// graph, web, vikunja); it rides with every /api/chat request as
+// brainToolRounds, clamped to 1..1000. The server also trims the oldest tool
+// results when the context overflows the model window, so a high value
+// degrades gracefully instead of failing.
 const BRAIN_TOOL_ROUNDS_MIN = 1;
-const BRAIN_TOOL_ROUNDS_MAX = 60;
+const BRAIN_TOOL_ROUNDS_MAX = 1000;
 const BRAIN_TOOL_ROUNDS_DEFAULT = 5;
 // 2026-10-21 (later still) owner request: the two mouse-resize fields (the
 // history/answer list and the prompt textarea) remember their grip position
@@ -470,11 +473,31 @@ function applyBrainToolRounds(rounds) {
     ? Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Math.round(value)))
     : BRAIN_TOOL_ROUNDS_DEFAULT;
   el.brainToolRoundsSlider.value = String(brainToolRounds);
+  el.brainToolRoundsInput.value = String(brainToolRounds);
   el.brainToolRoundsValue.textContent = String(brainToolRounds);
 }
 
 el.brainToolRoundsSlider.addEventListener("input", () => {
   applyBrainToolRounds(el.brainToolRoundsSlider.value);
+  try {
+    localStorage.setItem(brainToolRoundsStorageKey, String(brainToolRounds));
+  } catch (error) {
+    log("settings", "Could not save the brain tool rounds", { message: error.message });
+  }
+});
+
+// The text field is the exact-value counterpart of the slider (a run of many
+// rounds is easier to type than to drag): it commits on blur/Enter (change),
+// not per keystroke. A valid number takes effect and moves the slider; an
+// empty or non-numeric entry reverts to the last value.
+el.brainToolRoundsInput.addEventListener("change", () => {
+  const raw = el.brainToolRoundsInput.value.trim();
+  const value = Number(raw);
+  if (raw === "" || !Number.isFinite(value)) {
+    el.brainToolRoundsInput.value = String(brainToolRounds);
+    return;
+  }
+  applyBrainToolRounds(value);
   try {
     localStorage.setItem(brainToolRoundsStorageKey, String(brainToolRounds));
   } catch (error) {
@@ -3626,6 +3649,7 @@ async function loadConfig(userFromLogin) {
       log("settings", "Could not load the brain tool rounds", { message: error.message });
     }
     el.brainToolRoundsSlider.disabled = false;
+    el.brainToolRoundsInput.disabled = false;
     // Show the connection state of both active endpoints right away.
     testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
     testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);
