@@ -5191,3 +5191,76 @@ hard refresh (Ctrl+Shift+R) to pick up the wider budget ceiling and the new
 tool-rounds slider; a saved budget value is kept as-is, and the tool-rounds
 slider starts at the 5-round default for browsers with no saved value. All
 three deployments are now at `2026.10.26-10`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-11 — brain tool-rounds range 1–1000 + text field + context-trim guard
+
+Two changes to the brain's per-request tool-rounds dial, so a long tool run can
+be requested (and still finish).
+
+**1. Tool-rounds range up to 1–1000, with a text field.** The endpoint panel's
+**Brain tool rounds** slider went from 1–60 to **1–1000** and gained a
+companion **text field** for exact values (both hold the same count, whichever
+is set takes effect, committed on blur/Enter, saved per browser
+`jarvis.brainToolRounds`). A multi-step ask ("read this repo, then SSH-test
+logins on every host") can be given many rounds without a code change. `BRAIN_TOOL_ROUNDS_MAX`
+is 1000 in both `server.js` (clamp) and `public/app.js`.
+
+**2. Context-trim guard.** Because the running brain context only grows (tool
+results are appended, never trimmed), a long run can overflow the model's input
+window, which a model rejects with a 400 "maximum context length …" that would
+otherwise 500 the whole `/api/chat` and discard all the tool work behind it.
+The new guard (`isContextOverflow` + `trimOldestToolExchange` in `server.js`)
+catches that specific 400 (matched on the body, so a bad-key/bad-model 400 still
+errors), sheds the *oldest* tool exchange (the assistant's tool call plus its
+results, keeping the most recent) and retries the same round — so a high round
+count degrades to "less of the early results in context" and still finishes.
+
+**Changed files:** `server.js` (version marker → 2026.10.26-11;
+`BRAIN_TOOL_ROUNDS_MAX` 60 → 1000; new `isContextOverflow` +
+`trimOldestToolExchange`; the per-round brain call wrapped in a
+context-overflow retry loop that trims the oldest tool exchange and retries),
+`public/app.js` (`BRAIN_TOOL_ROUNDS_MAX` 60 → 1000; `brainToolRoundsInput`
+el + `applyBrainToolRounds` sets the field + `change` listener + init/enabled),
+`public/index.html` (tool-rounds slider `max` 60 → 1000; new
+`brainToolRoundsInput` text field + `brain-rounds-unit` row + updated copy),
+`public/style.css` (the `.brain-budget-row`/`-unit` selectors now also cover
+`.brain-rounds-row`/`-unit`), `.env.example` (`BRAIN_TOOL_ROUNDS` comment
+1..60 → 1..1000 + trim-guard note), tests (`graph.test.mjs` mock-brain
+context-overflow branch + trim-guard test; `pipeline.browser.mjs` tool-rounds
+text-field + 1000-range test).
+
+**Tests:** unit 216/216 (was 215, +1 trim-guard graph test); browser
+68 pass / 0 fail / 2 skipped (was 67, +1 tool-rounds text-field test). vm104
+host unit suite 216/216.
+
+**Rollout (lockstep, image files `server.js` + `public/app.js` +
+`public/index.html` + `public/style.css`; the two changed test files synced to
+the host trees too):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.26-11-20261026T210859Z/before.tar.gz`, scp 4 files
+  (disk md5s = local), `docker compose build` + `up -d --force-recreate`,
+  `running`, `/api/health` 200, `appVersion 2026.10.26-11`, in-image md5s
+  match, host unit suite 216/216.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup
+  `jarvis-scoped-2026.10.26-11-20261026T211125Z/before.tar.gz`, same 4 files
+  (md5s identical), same build/recreate. `running`, `/api/health` 200,
+  `appVersion 2026.10.26-11`, in-image md5s identical.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup
+  `jarvis-scoped-2026.10.26-11-20261026T211235Z/before.tar.gz`, same 4 files
+  (md5s identical), same build/recreate. `running`, `/api/health` 200,
+  `appVersion 2026.10.26-11`, in-image md5s identical.
+
+**In-image md5 (all three hosts):** `server.js`
+`1ced4fd0b18277e4397c4296f9480ead`, `public/app.js`
+`2ff729db3aa3d460039fbcc974d5adae`, `public/index.html`
+`d3cd7c16645c239b052abdf5da740dd0`, `public/style.css`
+`4339f99c4b9e8fd56e8e9005a0dabd63`.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). Browsers need a
+hard refresh (Ctrl+Shift+R) to pick up the wider tool-rounds range (1–1000)
+and the new text field; a saved tool-rounds value is kept as-is, and the
+slider starts at the 5-round default for browsers with no saved value. All
+three deployments are now at `2026.10.26-11`, identical in-image and on disk.
