@@ -4943,3 +4943,57 @@ intentional live-vm103 skips).
 sessions (the next sign-in re-establishes them, as designed). No panel
 statics changed, so no browser refresh is needed. All three deployments are
 now at `2026.10.26-6`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-7 — per-browser brain token budget slider (1K..2048K)
+
+**Change (feature).** The owner kept hitting the "The brain spent its whole
+token budget on reasoning and returned no answer" error: the brain is a
+reasoning model, so its per-answer `max_tokens` (hardcoded 4096) covers its
+thinking tokens too, and on complex asks 4096 is spent on reasoning with
+nothing left for the reply (`finish_reason "length"`, empty content). The
+endpoint panel now has a **Brain token budget** slider (1K..2048K, saved per
+browser) that rides each `/api/chat` as `brainMaxTokens`; the server clamps
+it to that window and uses it as the brain's `max_tokens` (default
+`BRAIN_MAX_TOKENS` env, 4096). It bounds the tokens, not the time — the
+Brain timeout slider still bounds the wall clock, so the two work together
+(a bigger budget needs enough time to generate). The graph-extraction call
+keeps its own fixed 4096 budget. The slider defaults to 4K (not the 1K
+floor) so a fresh browser keeps the current 4096 behavior.
+
+**Changed files:** `server.js` (version marker → 2026.10.26-7;
+`BRAIN_MAX_TOKENS_*` consts + `normalizeBrainMaxTokens`; `brainMaxTokens`
+threaded through `chat()` → `runBrain()` and both `max_tokens` call sites;
+`/api/chat` reads `payload.brainMaxTokens`), `public/app.js` (budget slider
+state + storage key `jarvis.brainBudgetK` + `applyBrainBudget` + listener;
+`brainMaxTokens: brainBudgetK * 1024` in the chat body), `public/index.html`
+(the slider in the endpoint panel). Tests: `tests/server.test.mjs` (budget
+default/override/clamp) + `tests/pipeline.browser.mjs` (slider round-trip).
+
+**Verification (2026-10-26 ~18:10 UTC, dev worktree):** unit 214/214
+(baseline 213 + 1), browser 66 pass / 0 fail / 2 skipped (the 2 intentional
+live-vm103 skips; baseline 65 + 1). The new browser test
+("the brain token budget slider persists per browser and rides with the chat
+request") passed in isolation.
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-7-20261026T170804Z.tar.gz`,
+  scp the five files, build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-7`, in-image md5s match disk and repo
+  (`server.js add9f1f6…`, `app.js 027a689f…`, `index.html 9d358863…`).
+  Host unit suite: 214/214.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-7-20261026T170924Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-7`, md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-7-20261026T171021Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-7`, md5s identical to vm104.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). A new panel
+control was added, so browsers need a hard refresh (Ctrl+Shift+R) to see the
+Brain token budget slider; until then their requests simply omit
+`brainMaxTokens` and the server uses the 4096 default (unchanged behavior).
+All three deployments are now at `2026.10.26-7`, identical in-image and on
+disk.
