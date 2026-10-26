@@ -5114,3 +5114,80 @@ sessions (the next sign-in re-establishes them, as designed). The slider
 ceiling changed, so browsers need a hard refresh (Ctrl+Shift+R); a saved
 value above 512K (e.g. the ~1000K that 400'd) clamps to 512K on reload. All
 three deployments are now at `2026.10.26-9`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-10 — budget ceiling back to 2048K (model-safe cap) + per-browser brain tool-rounds slider
+
+Two changes to the brain's per-request dials.
+
+**1. Brain token budget ceiling back to 2048K, with a model-safe server cap.**
+The `2026.10.26-9` ceiling of 512K was raised back to **2048K** (1K = 1024
+tokens) so the endpoint panel's slider/field offer the full range again. The
+value actually SENT to a model is now additionally capped at that model's safe
+maximum — a per-profile map (`PROFILE_SAFE_MAX_TOKENS` in `server.js`):
+deepseek-v4-flash (1,000,000 total context) → 512K output (the default for the
+large-context Qwen/Claude profiles too); the OVH Qwen3.6-27B (known 262,144) →
+128K. So setting 2048K means "as much as this model can take" and can never
+400 on `max_tokens ... greater than max_model_len` (the ~1000K 400 from
+2026.10.26). `chat()` computes `maxTokens = min(requested,
+profileSafeMaxTokens(profile))` before `runBrain`.
+
+**2. Per-browser Brain tool-rounds slider.** Every MCP tool (github, ssh,
+graph, web, vikunja, …) shares one per-request budget of tool-call rounds,
+previously a fixed `GRAPH_TOOL_ROUNDS` = 5. That wall was hit live
+2026-10-26 19:23: a "read kirks2003/rw_mesh's mesh-test.sh + test logins on
+every host from nbg-1/vie-1" ask needed more than 5 rounds, so after the 5th
+the backend forced a final answer ("Tool budget reached. Answer now…") and the
+butler relayed it as "das Tool-Budget für diesen Durchlauf alle ist." The
+endpoint panel now has a **Brain tool rounds** slider (1–60, saved per
+browser, `jarvis.brainToolRounds`) that rides each `/api/chat` as
+`brainToolRounds`; the server clamps it to 1..60 and uses it as the round cap
+(default `BRAIN_TOOL_ROUNDS` env, else 5). Still bounded by the Brain timeout.
+
+**Changed files:** `server.js` (version marker → 2026.10.26-10;
+`BRAIN_MAX_TOKENS_MAX` back to `2048*1024`; `PROFILE_SAFE_MAX_TOKENS` map +
+`profileSafeMaxTokens` + `DEFAULT_SAFE_MAX_TOKENS = 512*1024`;
+`BRAIN_TOOL_ROUNDS_{MIN,MAX,DEFAULT}` + `normalizeBrainToolRounds`;
+`chat(...,brainToolRounds)` → `runBrain({...,maxTokens,toolRounds})`; the tool
+loop checks `round >= toolRounds`; `/api/chat` reads
+`payload.brainToolRounds`), `public/app.js` (`BRAIN_BUDGET_MAX_K` back to 2048;
+`brainToolRounds*` key/consts/`applyBrainToolRounds` (with the
+`Number(null)`=0 null-guard) + slider listener + init; `brainToolRounds` in
+the chat body), `public/index.html` (budget slider/field `max` back to 2048 +
+updated copy; new `brainToolRoundsSlider` + `brainToolRoundsValue`),
+`.env.example` (budget comment 1K..2048K + model cap; new `BRAIN_TOOL_ROUNDS`
+= 5), tests (`server.test.mjs` 2048K→512K cap case; `pipeline.browser.mjs`
+2048 UI clamp + tool-rounds slider round-trip; `graph.test.mjs`
+`brainToolRounds: 8` runs 8 rounds). No compose change this release (the
+`logging:` block shipped in 2026.10.26-9).
+
+**Tests:** unit 215/215 (was 214, +1 tool-rounds graph test); browser
+67 pass / 0 fail / 2 skipped (was 66, +1 tool-rounds slider test). vm104 host
+unit suite 215/215.
+
+**Rollout (lockstep, image files `server.js` + `public/app.js` +
+`public/index.html` only):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.26-10-20261026T190814Z/before.tar.gz`, scp 3 files
+  (disk md5s = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-10`, in-image
+  md5s match, host unit suite 215/215.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-10-20261026T190814Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.26-10`, in-image md5s identical.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-10-20261026T190814Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.26-10`, in-image md5s identical.
+
+**In-image md5 (all three hosts):** `server.js`
+`6f734f937c0558b38d9386d055e3ed0a`, `public/app.js`
+`45fbb7d63952c68be76b5ac5e875b53a`, `public/index.html`
+`b0ff9823f16b350afeec11cddd68373e`.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). Browsers need a
+hard refresh (Ctrl+Shift+R) to pick up the wider budget ceiling and the new
+tool-rounds slider; a saved budget value is kept as-is, and the tool-rounds
+slider starts at the 5-round default for browsers with no saved value. All
+three deployments are now at `2026.10.26-10`, identical in-image and on disk.
