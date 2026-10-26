@@ -68,7 +68,7 @@ async function setup(t, transcribe, options = {}, pageBrowser = browser) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
-  const calls = { audio: [], prompts: [], speak: [], mcp: undefined, wakePhrase: undefined, brainTimeoutMin: undefined, brainMaxTokens: undefined, maxInFlight: 0 };
+  const calls = { audio: [], prompts: [], speak: [], mcp: undefined, wakePhrase: undefined, brainTimeoutMin: undefined, brainMaxTokens: undefined, brainToolRounds: undefined, maxInFlight: 0 };
   let inFlight = 0;
   await page.addInitScript(() => {
     window.testTracks = [];
@@ -150,6 +150,7 @@ async function setup(t, transcribe, options = {}, pageBrowser = browser) {
     calls.wakePhrase = payload.wakePhrase;
     calls.brainTimeoutMin = payload.brainTimeoutMin;
     calls.brainMaxTokens = payload.brainMaxTokens;
+    calls.brainToolRounds = payload.brainToolRounds;
     const result = options.chat
       ? await options.chat(calls.prompts.length, payload)
       : { answer: options.answer || "Done.", requestId: "brain-test" };
@@ -680,7 +681,7 @@ test("the brain token budget slider and text field share one value and ride with
   assert.equal(await page.textContent("#brainBudgetValue"), "32K");
   assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainBudgetK")), "32");
   // A non-numeric entry reverts to the last value; an out-of-range one clamps
-  // to the 1K..512K window.
+  // to the 1K..2048K window.
   await page.evaluate(() => {
     const input = document.getElementById("brainBudgetInput");
     input.value = "abc";
@@ -692,9 +693,9 @@ test("the brain token budget slider and text field share one value and ride with
     input.value = "9999";
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  assert.equal(await page.inputValue("#brainBudgetInput"), "512");
-  assert.equal(await page.inputValue("#brainBudgetSlider"), "512");
-  assert.equal(await page.textContent("#brainBudgetValue"), "512K");
+  assert.equal(await page.inputValue("#brainBudgetInput"), "2048");
+  assert.equal(await page.inputValue("#brainBudgetSlider"), "2048");
+  assert.equal(await page.textContent("#brainBudgetValue"), "2048K");
   // Back to a known value for the pipeline.
   await page.evaluate(() => {
     const input = document.getElementById("brainBudgetInput");
@@ -716,6 +717,41 @@ test("the brain token budget slider and text field share one value and ride with
   assert.equal(await page.inputValue("#brainBudgetSlider"), "32");
   assert.equal(await page.inputValue("#brainBudgetInput"), "32");
   assert.equal(await page.textContent("#brainBudgetValue"), "32K");
+});
+
+test("the brain tool-rounds slider persists per browser and rides with the chat request", { timeout: 45000 }, async (t) => {
+  const { page, calls } = await setup(t, async (n) => ({
+    text: n === 1 ? "Rocky" : n === 2 ? "" : "What is one plus one?",
+  }), { config: { user: "Roman" } });
+  await page.evaluate(() => { Math.random = () => 0; });
+  // The tool-rounds slider is enabled once the config arrives (5-round
+  // default, matching the previous fixed cap).
+  await page.waitForFunction(() => !document.getElementById("brainToolRoundsSlider").disabled);
+  assert.equal(await page.inputValue("#brainToolRoundsSlider"), "5");
+  assert.equal(await page.textContent("#brainToolRoundsValue"), "5");
+  // Raise it to 20 rounds (multi-step asks need more than 5); the value label
+  // updates and the choice is saved per browser (no pipeline interrupt — it
+  // bounds the next brain request only).
+  await page.evaluate(() => {
+    const slider = document.getElementById("brainToolRoundsSlider");
+    slider.value = "20";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  assert.equal(await page.textContent("#brainToolRoundsValue"), "20");
+  assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.brainToolRounds")), "20");
+  // Utterance 1 is the spoken greeting, 2 the thinking line of the command,
+  // 3 its answer — the answer proves the brain request (with the slider value)
+  // finished.
+  await page.waitForFunction(() => window.savedUtterances.length === 3, null, { timeout: 30000 });
+  await page.click("#stopButton");
+  assert.deepEqual(calls.prompts, ["What is one plus one?"]);
+  assert.equal(calls.brainToolRounds, 20);
+  // The saved value survives a reload (stop first so the page starts in
+  // standby, like the timeout test).
+  await page.reload();
+  await page.waitForFunction(() => !document.getElementById("brainToolRoundsSlider").disabled);
+  assert.equal(await page.inputValue("#brainToolRoundsSlider"), "20");
+  assert.equal(await page.textContent("#brainToolRoundsValue"), "20");
 });
 
 test("a command spoken right after the greeting over the echo is captured, not lost", { timeout: 30000 }, async (t) => {

@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-9").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-10").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -1698,7 +1698,7 @@ const server = http.createServer(async (req, res) => {
       if (!profile) return json(res, 503, { error: "brain_not_configured", requestId });
       const result = await chat(prompt, req.user, normalizeLanguage(payload.language) || "en", profile, requestId, controller.signal, normalizeMcpFlags(payload),
         String(payload.wakePhrase || "").slice(0, 60), req.headers.host, normalizeHistorySettings(payload.historySearch),
-        normalizeBrainTimeoutMin(payload.brainTimeoutMin), normalizeBrainMaxTokens(payload.brainMaxTokens));
+        normalizeBrainTimeoutMin(payload.brainTimeoutMin), normalizeBrainMaxTokens(payload.brainMaxTokens), normalizeBrainToolRounds(payload.brainToolRounds));
       return json(res, 200, result);
     }
 
@@ -2421,17 +2421,38 @@ function normalizeBrainTimeoutMin(value) {
 }
 
 // The brain's per-answer token budget (max_tokens). The endpoint panel's
-// budget slider/field sets it per request, clamped to 1K..512K (1K = 1024
+// budget slider/field sets it per request, clamped to 1K..2048K (1K = 1024
 // tokens); the BRAIN_MAX_TOKENS env overrides the 4096 default for
 // deployments. The brain is a reasoning model, so the budget covers its
 // thinking tokens too — an undersized one is spent on reasoning and the reply
-// comes back with empty content (finish_reason "length"). The 512K ceiling
-// stays below the default model's total context (deepseek-v4-flash
-// max_model_len = 1,000,000), so a high value can never 400 on
-// "max_tokens ... greater than max_model_len".
+// comes back with empty content (finish_reason "length").
+//
+// 2048K is what the UI offers, but the value actually SENT to a model is
+// additionally capped at that model's safe maximum (see
+// profileSafeMaxTokens): max_tokens must stay below the model's total context
+// (max_model_len) with room for the prompt, otherwise the model 400s with
+// "max_tokens ... greater than max_model_len". So setting 2048K is safe — it
+// just means "as much as this model can take".
 const BRAIN_MAX_TOKENS_MIN = 1024;
-const BRAIN_MAX_TOKENS_MAX = 512 * 1024;
+const BRAIN_MAX_TOKENS_MAX = 2048 * 1024;
 const BRAIN_MAX_TOKENS_DEFAULT = Math.min(BRAIN_MAX_TOKENS_MAX, Math.max(BRAIN_MAX_TOKENS_MIN, Number(process.env.BRAIN_MAX_TOKENS) || 4096));
+
+// Per-profile safe max_tokens (output): half the model's total context,
+// leaving room for the prompt. The primary deepseek-v4-flash is 1,000,000
+// tokens (-> 512K output), which is also the default for the large-context
+// Qwen/Claude profiles; the OVH Qwen3.6-27B is known to be 262,144 (-> 128K).
+// So a high panel value (up to 2048K) is always safe — it caps at the model's
+// usable maximum and can never 400 on max_model_len.
+const PROFILE_SAFE_MAX_TOKENS = {
+  "a1-deepseek": 512 * 1024,
+  "openrouter-deepseek": 512 * 1024,
+  ovhcloud: 128 * 1024,
+};
+const DEFAULT_SAFE_MAX_TOKENS = 512 * 1024;
+
+function profileSafeMaxTokens(profile) {
+  return PROFILE_SAFE_MAX_TOKENS[profile?.id] ?? DEFAULT_SAFE_MAX_TOKENS;
+}
 
 function normalizeBrainMaxTokens(value) {
   const tokens = Number(value);
@@ -2439,7 +2460,7 @@ function normalizeBrainMaxTokens(value) {
   return Math.min(BRAIN_MAX_TOKENS_MAX, Math.max(BRAIN_MAX_TOKENS_MIN, Math.round(tokens)));
 }
 
-async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings(), brainTimeoutMs = null, brainMaxTokens = null) {
+async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings(), brainTimeoutMs = null, brainMaxTokens = null, brainToolRounds = null) {
   if (!brainProfile?.configured || String(brainProfile.apiKey).includes("PUT-YOUR")) {
     throw new Error("Brain endpoint/model is not configured");
   }
@@ -2599,8 +2620,12 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
   // tool chains (e.g. a Kandev task) instead of a "signal timed out". The
   // panel's token-budget slider rides as maxTokens (default 4096) and bounds
   // how many tokens the brain may spend thinking + answering.
+  // The panel's token budget is capped at the model's safe maximum so a high
+  // value (e.g. 2048K) can never 400 on the model's max_model_len; the panel's
+  // tool-rounds slider rides as toolRounds (default 5, capped 1..60).
+  const maxTokens = Math.min(brainMaxTokens ?? BRAIN_MAX_TOKENS_DEFAULT, profileSafeMaxTokens(brainProfile));
   const { data, webResults, webSources, graphUsed, graphWriteSucceeded } = await runBrain({ messages, brainProfile, user, useTools: Boolean(mcpFlags.graph && graphStore), webTools: Boolean(mcpFlags.websearch), webSourcesList, vikunjaTools, vikunjaClient, vikunjaToolNames, externalMcp: externalMcpEntries, admin: isAdmin(user), lang: language === "de" ? "de" : "en", historySettings, requestId, signal, headers,
-    deadlineMs: brainTimeoutMs ?? BRAIN_TIMEOUT_DEFAULT_MS, maxTokens: brainMaxTokens ?? BRAIN_MAX_TOKENS_DEFAULT });
+    deadlineMs: brainTimeoutMs ?? BRAIN_TIMEOUT_DEFAULT_MS, maxTokens, toolRounds: brainToolRounds ?? BRAIN_TOOL_ROUNDS_DEFAULT });
   const answer = extractAnswer(data);
   if (!answer) {
     const finishReason = data?.choices?.[0]?.finish_reason || "";
@@ -2694,6 +2719,22 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
 // and admin gates.
 // Five rounds: a schema call plus a few follow-ups is the common pattern.
 const GRAPH_TOOL_ROUNDS = 5;
+// The tool-call round budget is shared by every MCP tool (graph, web, vikunja,
+// github-ro, ssh, …) and is now per-request: the endpoint panel's slider rides
+// as brainToolRounds, clamped to 1..60; the BRAIN_TOOL_ROUNDS env overrides the
+// 5-round default for deployments. The whole run is still bounded by the brain
+// deadline (BRAIN_TIMEOUT_MS / brainTimeoutMin), so a high round count cannot
+// run away.
+const BRAIN_TOOL_ROUNDS_MIN = 1;
+const BRAIN_TOOL_ROUNDS_MAX = 60;
+const BRAIN_TOOL_ROUNDS_DEFAULT = Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Number(process.env.BRAIN_TOOL_ROUNDS) || GRAPH_TOOL_ROUNDS));
+
+function normalizeBrainToolRounds(value) {
+  const rounds = Number(value);
+  if (!Number.isFinite(rounds)) return null;
+  return Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Math.round(rounds)));
+}
+
 const GRAPH_TOOL_TIMEOUT_MS = 15000;
 const GRAPH_TOOL_NAMES = new Set(["get-schema", "get-entity", "list-my-knowledge", "list-my-facts", "get-personality"]);
 // The write/delete surface — offered to EVERY session with graph tools;
@@ -3062,7 +3103,7 @@ function canonicalizeToolName(name) {
   return STATIC_TOOL_BY_KEY.get(raw.toLowerCase().replace(/[-_\s]+/g, "")) || raw;
 }
 
-async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs, maxTokens = BRAIN_MAX_TOKENS_DEFAULT }) {
+async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs, maxTokens = BRAIN_MAX_TOKENS_DEFAULT, toolRounds = BRAIN_TOOL_ROUNDS_DEFAULT }) {
   const local = [...messages];
   const totalSignal = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
   // Web tool results collected for post-turn ingestion (the extractor reads
@@ -3121,7 +3162,7 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
       fromXml = toolCalls.length > 0;
     }
     if (!hasTools || !toolCalls.length) return { data, webResults, webSources, graphUsed, graphWriteSucceeded };
-    if (round >= GRAPH_TOOL_ROUNDS) {
+    if (round >= toolRounds) {
       // Tool budget spent: force a final answer without tools.
       // Tool budget spent: force a final answer without tools. The nudge
       // rides as a `user` turn, not a `system` one: a system message after

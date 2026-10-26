@@ -121,17 +121,31 @@ Kandev task) no longer end in a "signal timed out".
 per-answer `max_tokens` covers its thinking tokens too — an undersized
 budget is spent on reasoning and the reply comes back empty
 (`finish_reason "length"`, "The brain spent its whole token budget on
-reasoning"). The endpoint panel's **Brain token budget** control (a 1K–512K
+reasoning"). The endpoint panel's **Brain token budget** control (a 1K–2048K
 slider plus a text field for exact values; both hold the same K, where
 1K = 1024 *tokens*, and whichever is set takes effect, saved per browser)
 rides with each `/api/chat` as `brainMaxTokens`; the server clamps it to that
 window and uses it as `max_tokens` (default `BRAIN_MAX_TOKENS` env, 4096).
-The 512K ceiling stays below the default model's total context
-(deepseek-v4-flash `max_model_len` = 1,000,000) so a high value can never
-400 on "max_tokens ... greater than max_model_len"; a smaller-context model
-needs a lower budget. It bounds the *tokens*, not the time — the Brain
-timeout slider above still bounds the wall clock, so the two work together: a
-bigger budget needs enough time to generate.
+The value actually sent is **additionally capped at the model's safe
+maximum** (a per-profile map: deepseek-v4-flash is 1,000,000 total context →
+512K output, which is also the default for the large-context Qwen/Claude
+profiles; the OVH Qwen3.6-27B is known to be 262,144 → 128K), so setting the
+full 2048K just means "as much as this model can take" and can never 400 on
+"max_tokens ... greater than max_model_len". It bounds the *tokens*, not the
+time — the Brain timeout slider above still bounds the wall clock, so the two
+work together: a bigger budget needs enough time to generate.
+
+**Brain tool rounds (2026-10-26):** every MCP tool (graph, web search,
+Vikunja, `github-ro`, the mesh-internal ssh/semaphore/checkmk servers, …)
+shares one per-request budget of **tool-call rounds** — the brain may make at
+most N tool rounds on one answer, after which the backend forces a final
+answer ("Tool budget reached. Answer now from what you have gathered"). The
+default is `GRAPH_TOOL_ROUNDS` = 5 (`BRAIN_TOOL_ROUNDS` env to override); the
+endpoint panel's **Brain tool rounds** slider (1–60, saved per browser) rides
+with each `/api/chat` as `brainToolRounds`, and the server clamps it to that
+range. Multi-step asks ("read this repo and test logins on every host") need
+more than 5 rounds; raise the slider for them. The whole run is still bounded
+by the Brain timeout above, so a high round count cannot run away.
 
 **Per-user persona (2026-10-26):** the assistant's persona is no longer a
 single hardcoded butler. Each owner can store their own personality in the
@@ -329,10 +343,27 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
- - Latest: `2026.10.26-9`
+ - Latest: `2026.10.26-10`
  
 ### 7.1 Release notes
- 
+  
+- **`2026.10.26-10` (this repo):** two changes to the brain's per-request
+  dials. (1) The **Brain token budget** ceiling went back up to **2048K**
+  (1K = 1024 tokens) so the panel offers the full range again; the value
+  actually sent to a model is now additionally capped at that model's safe
+  maximum (a per-profile map: deepseek-v4-flash 1,000,000 total context →
+  512K output, the default for the large-context Qwen/Claude profiles; the
+  OVH Qwen3.6-27B is 262,144 → 128K), so a high value means "as much as this
+  model can take" and can never 400 on "max_tokens ... greater than
+  max_model_len". (2) A new **Brain tool rounds** slider (1–60, saved per
+  browser) in the endpoint panel rides with each `/api/chat` as
+  `brainToolRounds`: it is the shared per-request tool-call-round budget that
+  every MCP tool (github, ssh, graph, web, vikunja, …) draws on, previously a
+  fixed `GRAPH_TOOL_ROUNDS` = 5. It is now overridable per browser (and via
+  the `BRAIN_TOOL_ROUNDS` env), still bounded by the Brain timeout, so a
+  multi-step ask that hit the old "tool budget exhausted" wall (e.g. read a
+  repo, then SSH-test logins on every host) can be given more rounds. Rolled
+  out to all three hosts 2026-10-26.
 - **`2026.10.26-9` (this repo):** two fixes. (1) The brain token budget
   ceiling was lowered from 2048K to **512K** (1K = 1024 tokens): the old
   ceiling let a user request more output tokens than the model's total

@@ -1278,7 +1278,7 @@ test("brain requests carry a reasoning-safe token budget and an exhausted budget
   mode = "success";
 });
 
-test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K..512K", async () => {
+test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K..2048K and capped at the model's safe max", async () => {
   mode = "success";
   const ask = (sessionId, brainMaxTokens) => auth(origin, "/api/chat", {
     method: "POST", headers: { "content-type": "application/json" },
@@ -1292,10 +1292,17 @@ test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K.
   response = await ask("budget-8k", 8192);
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 8192);
-  // Out-of-range values are clamped to the 1K..512K window.
+  // Out-of-range values are clamped to the 1K..2048K window, then capped at
+  // the model's safe maximum (the default profile is a large-context model,
+  // so its safe max is 512K — half the 1M deepseek-v4-flash context).
   response = await ask("budget-low", 10);
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 1024);
+  // The panel's full 2048K value is allowed by the window but capped at the
+  // model's safe maximum (512K), so it can never 400 on max_model_len.
+  response = await ask("budget-2048k", 2048 * 1024);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 512 * 1024);
   response = await ask("budget-high", 999999999);
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 512 * 1024);

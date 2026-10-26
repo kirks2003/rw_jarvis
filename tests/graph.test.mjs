@@ -1822,6 +1822,26 @@ test("the graph tool budget leaves room for schema plus follow-up queries (five 
   );
 });
 
+test("the panel's brainToolRounds raises the shared tool budget above the five-round default", async () => {
+  const origin = origins[1];
+  const cookie = await login(origin);
+  finalRequests = [];
+  const response = await fetch(`${origin}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ prompt: "Loop the tools", mcp: { graph: true, websearch: false }, brainToolRounds: 8 }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.answer, "I checked the graph.", "the (raised) budget forces a final answer");
+  // The mock brain asks for a tool on every round, so the server executes the
+  // panel's 8-round budget before forcing the final answer — not the 5-round
+  // default. This is what lets a multi-step ask (read a repo + SSH-test logins
+  // on every host) get past the old "tool budget exhausted" wall.
+  const lastRequest = finalRequests[finalRequests.length - 1];
+  const toolResults = lastRequest.messages.filter((message) => message.role === "tool");
+  assert.equal(toolResults.length, 8, `tool results delivered to the brain: ${toolResults.length}`);
+});
+
 test("raw Cypher is not on the tool surface: the old read-cypher call is rejected as unknown", async () => {
   const origin = origins[1];
   const backend = backends[1];

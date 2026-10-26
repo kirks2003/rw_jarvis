@@ -24,6 +24,7 @@ const el = Object.fromEntries([
   "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
   "brainTimeoutSlider", "brainTimeoutValue",
   "brainBudgetSlider", "brainBudgetValue", "brainBudgetInput",
+  "brainToolRoundsSlider", "brainToolRoundsValue",
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
@@ -71,16 +72,23 @@ const aiProfileStorageKey = "jarvis.aiProfile";
 const whisperProfileStorageKey = "jarvis.whisperProfile";
 const brainTimeoutStorageKey = "jarvis.brainTimeoutMin";
 const brainBudgetStorageKey = "jarvis.brainBudgetK";
+const brainToolRoundsStorageKey = "jarvis.brainToolRounds";
 const BRAIN_TIMEOUT_MIN_MINUTES = 1;
 const BRAIN_TIMEOUT_MAX_MINUTES = 600;
-// The brain's per-answer token budget, in K (1K..512K, 1K = 1024 tokens),
+// The brain's per-answer token budget, in K (1K..2048K, 1K = 1024 tokens),
 // from the endpoint panel's slider/field. Rides with every /api/chat request
-// as brainMaxTokens; the server clamps it to the same window. The 512K ceiling
-// stays below the default model's total context (deepseek-v4-flash = 1M
-// tokens), so a high value can never 400 on the model's max_model_len.
+// as brainMaxTokens; the server clamps it to the 1K..2048K window AND caps the
+// value it sends at the model's safe maximum, so a high value just means "as
+// much as the model can take" and can never 400 on the model's max_model_len.
 const BRAIN_BUDGET_MIN_K = 1;
-const BRAIN_BUDGET_MAX_K = 512;
+const BRAIN_BUDGET_MAX_K = 2048;
 const BRAIN_BUDGET_DEFAULT_K = 4;
+// The brain's per-request tool-call round budget, from the endpoint panel's
+// slider. Shared by every MCP tool (github, ssh, graph, web, vikunja); it
+// rides with every /api/chat request as brainToolRounds, clamped to 1..60.
+const BRAIN_TOOL_ROUNDS_MIN = 1;
+const BRAIN_TOOL_ROUNDS_MAX = 60;
+const BRAIN_TOOL_ROUNDS_DEFAULT = 5;
 // 2026-10-21 (later still) owner request: the two mouse-resize fields (the
 // history/answer list and the prompt textarea) remember their grip position
 // per browser.
@@ -134,6 +142,10 @@ let brainTimeoutMin = BRAIN_TIMEOUT_MIN_MINUTES;
 // The brain is a reasoning model, so this bounds both its thinking and its
 // reply. Rides with every /api/chat request; the server clamps it to 1K..2048K.
 let brainBudgetK = BRAIN_BUDGET_DEFAULT_K;
+// The brain's per-request tool-call round budget (how many tool rounds it may
+// chain on one answer before it must answer). Rides with every /api/chat
+// request; the server clamps it to 1..60.
+let brainToolRounds = BRAIN_TOOL_ROUNDS_DEFAULT;
 const mcpServers = [];
 const mcpFlags = {};
 let current = null;
@@ -443,6 +455,30 @@ el.brainBudgetInput.addEventListener("change", () => {
     localStorage.setItem(brainBudgetStorageKey, String(brainBudgetK));
   } catch (error) {
     log("settings", "Could not save the brain token budget", { message: error.message });
+  }
+});
+
+// Brain tool-rounds slider: how many tool-call rounds the brain may chain on
+// one answer (github/ssh/graph/web/vikunja all share this budget). Like the
+// other two brain dials it is saved per browser and bounds the NEXT request
+// only, so no pipeline interrupt is needed. Nothing saved yet -> the 5-round
+// default, matching the previous fixed cap.
+function applyBrainToolRounds(rounds) {
+  const raw = rounds === null || rounds === undefined ? "" : String(rounds);
+  const value = Number(raw);
+  brainToolRounds = (raw !== "" && Number.isFinite(value))
+    ? Math.min(BRAIN_TOOL_ROUNDS_MAX, Math.max(BRAIN_TOOL_ROUNDS_MIN, Math.round(value)))
+    : BRAIN_TOOL_ROUNDS_DEFAULT;
+  el.brainToolRoundsSlider.value = String(brainToolRounds);
+  el.brainToolRoundsValue.textContent = String(brainToolRounds);
+}
+
+el.brainToolRoundsSlider.addEventListener("input", () => {
+  applyBrainToolRounds(el.brainToolRoundsSlider.value);
+  try {
+    localStorage.setItem(brainToolRoundsStorageKey, String(brainToolRounds));
+  } catch (error) {
+    log("settings", "Could not save the brain tool rounds", { message: error.message });
   }
 });
 
@@ -2552,9 +2588,10 @@ async function answer(session, prompt) {
           method: "POST", headers: { "content-type": "application/json" },
           // The brain answers as the wake word's name, so the active phrase
           // (server default or personal override) travels with every request;
-          // the panel's brain-timeout slider travels as brainTimeoutMin and its
-          // token-budget slider as brainMaxTokens (K * 1024).
-          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings, brainTimeoutMin, brainMaxTokens: brainBudgetK * 1024 }),
+          // the panel's brain-timeout slider travels as brainTimeoutMin, its
+          // token-budget slider as brainMaxTokens (K * 1024) and its tool-rounds
+          // slider as brainToolRounds.
+          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings, brainTimeoutMin, brainMaxTokens: brainBudgetK * 1024, brainToolRounds }),
           signal: brainSpeech.signal,
           // Wait out the server-side brain deadline (brainTimeoutMin) plus a
           // margin for the pre-brain steps (web search, graph context).
@@ -3582,6 +3619,13 @@ async function loadConfig(userFromLogin) {
     }
     el.brainBudgetSlider.disabled = false;
     el.brainBudgetInput.disabled = false;
+    try {
+      applyBrainToolRounds(localStorage.getItem(brainToolRoundsStorageKey));
+    } catch (error) {
+      applyBrainToolRounds(BRAIN_TOOL_ROUNDS_DEFAULT);
+      log("settings", "Could not load the brain tool rounds", { message: error.message });
+    }
+    el.brainToolRoundsSlider.disabled = false;
     // Show the connection state of both active endpoints right away.
     testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
     testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);
