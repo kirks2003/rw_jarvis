@@ -4695,3 +4695,45 @@ deployments are now at `2026.10.26-2`, identical in-image and on disk.
 Note: a pre-existing stray `mcp/checkmk.mjs.bak-20261022T104354Z` backup
 file sits inside the images (host-side leftover from a 2026-10-22 hotfix,
 present before this rollout); harmless, left in place.
+
+## 2026-10-26: 2026.10.26-3 — thinking comet swapped for opencode's braille spinner
+
+**Change (user request).** The one-cell thinking comet (▖ ▀ ▐ ▔ ▌, 70 ms,
+per-frame opacity pulse, 30 s easing) was replaced by the spinner opencode
+uses in its main session view — the braille dot set ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
+cycled at 80 ms with uniform brightness (the de-facto CLI standard, also
+the `ora` default). Research source: `anomalyco/opencode`,
+`packages/tui/src/component/spinner-frames.ts` (main-session frames) and
+`packages/tui/src/ui/one-cell-motion.ts` (one-cell presets); opencode's
+subcell-block presets were rejected for a browser UI because their Unicode
+13 subcell glyphs have spotty font coverage.
+
+**Changed files:** `public/app.js` (`THINKING_FRAMES` = the 10 braille
+glyphs, single 80 ms cadence, opacity pulse and 30 s pacing removed;
+placement, disposal and reduced-motion handling unchanged — reduced motion
+now gets a static ⠋ dot), `public/style.css` (comment only), `server.js`
+(version marker 2026.10.26-2 → 2026.10.26-3).
+
+**Verification (2026-10-26 ~14:45 UTC, in the dev worktree):** unit 205/205,
+browser 64 pass / 0 fail / 2 skipped (baseline); a VM harness driving the
+shipped `createThinkingChar` verbatim confirmed all 10 frames cycle at 80 ms
+with no opacity writes and a static first dot under
+`prefers-reduced-motion`.
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-3-20261026T134208Z.tar.gz`,
+  scp `server.js` + `public/app.js` + `public/style.css`, build/recreate.
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-3`, in-image
+  md5s match disk and repo (`server.js 661d138a…`, `public/app.js
+  21505a39…`, `public/style.css ceb50c70…`). Host suites: unit 205/205,
+  browser 64 pass / 0 fail / 2 skipped.
+- **gra-1** (via nbg-1 → 192.168.116.11): backup
+  `jarvis-scoped-2026.10.26-3-20261026T134730Z.tar.gz`, same build/recreate.
+  `running|healthy`, `appVersion 2026.10.26-3`, md5s identical to vm104.
+- **lim-1** (via nbg-1 → 192.168.115.11): backup
+  `jarvis-scoped-2026.10.26-3-20261026T134835Z.tar.gz`, same build/recreate.
+  `running|healthy`, `appVersion 2026.10.26-3`, md5s identical to vm104.
+
+**Effect on live data:** none. Panel statics changed, so browsers need a
+hard refresh (Ctrl+Shift+R) to see the braille spinner. All three
+deployments are now at `2026.10.26-3`, identical in-image and on disk.
