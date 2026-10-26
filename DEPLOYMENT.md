@@ -4887,3 +4887,59 @@ confirmed). It is the only `:Personality` node and takes effect from Roman's
 next request with the graph toggle on. Panel statics changed, so browsers
 need a hard refresh (Ctrl+Shift+R) to see the cost switch. All three
 deployments are now at `2026.10.26-5`, identical in-image and on disk.
+
+## 2026-10-26: 2026.10.26-6 — native DSML tool-call dialect + tool-name canonicalisation
+
+**Change (bug fix).** The brain (DeepSeek/Qwen behind the OpenAI-compatible
+proxy) intermittently answers with its NATIVE tool-call markup inside
+`content` instead of the OpenAI `tool_calls` field. The backend's
+`parseToolCallsFromContent` fallback only tolerated the OLD ASCII-pipe
+dialect (`<|invoke| name="...">`). Newer builds emit a FULLWIDTH-bar /
+"DSML" dialect (`<｜DSML｜invoke name="...">`) the parser did not recognise,
+so the raw XML was spoken and rendered in the conversation panel instead of
+being executed (reproduced live: the owner's "save the mesh info" turn came
+back as eight `<｜DSML｜invoke name="store_entity">` blocks in the panel,
+nothing stored). Two fixes: (1) the special-token fence around each tag name
+is now matched leniently in every slot — an empty fence, or any run of
+ASCII/fullwidth bars with an optional "DSML" between — so both dialects (and
+a paramless invoke inside the wrapper) parse; (2) the dispatcher
+canonicalises the tool name before routing — some models "clean"
+`store-entity` to `store_entity` — by comparing with all separators removed
+and lowercased against the static tool sets; names that match no static tool
+(the namespaced `<id>_<tool>` external MCP tools and the Vikunja tools) pass
+through unchanged.
+
+**Changed files:** `server.js` (version marker → 2026.10.26-6;
+`STATIC_TOOL_BY_KEY` + `canonicalizeToolName` next to `graphToolDetail`; the
+dispatch loop canonicalises `call.function.name` before any routing),
+`graphdb.js` (`TOOL_CALL_FENCE` + the rewritten `parseToolCallsFromContent`
+regexes, updated comment covering both dialects), `tests/graph.test.mjs`
+(new parser unit test for the DSML/fullwidth dialect incl. a paramless
+invoke and a prose negative; the mock brain's "Store via dsml" mode; new
+end-to-end test proving the underscore name is canonicalised to
+`store-entity` at the MCP, the write is audited, and no markup leaks into
+the answer).
+
+**Verification (2026-10-26 ~17:35 UTC, dev worktree):** unit 213/213
+(baseline 211 + 2 new tests), browser 65 pass / 0 fail / 2 skipped (the 2
+intentional live-vm103 skips).
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-6-20261026T163414Z.tar.gz`,
+  scp `server.js` + `graphdb.js` + `tests/graph.test.mjs`, build/recreate.
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-6`, in-image
+  md5s match disk and repo (`server.js e2079c3a…`,
+  `graphdb.js 39fe4d13…`). Host unit suite: 213/213.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-6-20261026T163551Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-6`, md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-6-20261026T163649Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-6`, md5s identical to vm104.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). No panel
+statics changed, so no browser refresh is needed. All three deployments are
+now at `2026.10.26-6`, identical in-image and on disk.
