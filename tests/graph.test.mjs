@@ -82,12 +82,41 @@ test("parseToolCallsFromContent recovers the native XML tool calls as OpenAI-sha
   assert.deepEqual(JSON.parse(multiCalls[1].function.arguments), { name: "Berlin", owner: "Mila" });
 });
 
+test("parseToolCallsFromContent recovers the newer DSML/fullwidth token dialect", () => {
+ // The newer model builds emit the tool-call special tokens with FULLWIDTH
+ // bars (U+FF5C) and a "DSML" infix instead of ASCII pipes — and they tend
+ // to "clean" the hyphenated tool name to an underscore. The parser must
+ // recover the calls regardless of the fence dialect (the name itself is
+ // canonicalised by the dispatcher, not here).
+ const dsml = "\u003c\uFF5CDSML\uFF5Ctool_calls\u003e"
+   + "\u003c\uFF5CDSML\uFF5Cinvoke name=\"store_entity\"\u003e"
+   + "\u003c\uFF5CDSML\uFF5Cparameter name=\"name\" string=\"true\"\u003enbg-1\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
+   + "\u003c\uFF5CDSML\uFF5Cparameter name=\"type\" string=\"true\"\u003ething\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
+   + "\u003c/\uFF5CDSML\uFF5Cinvoke\u003e"
+   + "\u003c\uFF5CDSML\uFF5Cinvoke name=\"store_entity\"\u003e"
+   + "\u003c\uFF5CDSML\uFF5Cparameter name=\"name\" string=\"true\"\u003evie-1\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
+   + "\u003c/\uFF5CDSML\uFF5Cinvoke\u003e"
+   + "\u003c/\uFF5CDSML\uFF5Ctool_calls\u003e";
+ const dsmlCalls = graphdb.parseToolCallsFromContent(dsml);
+ assert.equal(dsmlCalls.length, 2, JSON.stringify(dsmlCalls));
+ assert.equal(dsmlCalls[0].function.name, "store_entity", "the model's raw (underscore) name is preserved here");
+ assert.deepEqual(JSON.parse(dsmlCalls[0].function.arguments), { name: "nbg-1", type: "thing" });
+ assert.deepEqual(JSON.parse(dsmlCalls[1].function.arguments), { name: "vie-1" });
+ // A paramless invoke inside the wrapper is still recovered.
+ const dsmlBare = "\u003c\uFF5CDSML\uFF5Ctool_calls\u003e\u003c\uFF5CDSML\uFF5Cinvoke name=\"get_personality\"\u003e\u003c/\uFF5CDSML\uFF5Cinvoke\u003e\u003c/\uFF5CDSML\uFF5Ctool_calls\u003e";
+ const bareCalls = graphdb.parseToolCallsFromContent(dsmlBare);
+ assert.equal(bareCalls.length, 1, JSON.stringify(bareCalls));
+ assert.equal(bareCalls[0].function.name, "get_personality");
+});
+
 test("parseToolCallsFromContent leaves ordinary answers untouched", () => {
   assert.deepEqual(graphdb.parseToolCallsFromContent("The graph shows 14 nodes."), []);
   assert.deepEqual(graphdb.parseToolCallsFromContent(null), []);
   // Prose that merely mentions the format is not reinterpreted: without the
   // tool_calls wrapper, BOTH an invoke and a parameter tag are required.
   assert.deepEqual(graphdb.parseToolCallsFromContent('The model replies with <invoke name="foo"> blocks.'), []);
+  // ...and prose that spells out the DSML dialect is not reinterpreted either.
+  assert.deepEqual(graphdb.parseToolCallsFromContent("The model uses \u003c\uFF5CDSML\uFF5Cinvoke\u003e tokens."), []);
 });
 
 test("parseExtraction drops duplicates, self-relations and garbage", () => {
@@ -1338,6 +1367,12 @@ before(async () => {
     // OpenAI tool_calls field — the backend must parse and execute it, never
     // hand the markup to the user as the answer.
     const wantsXmlToolCall = String(lastUser?.content || "").includes("Call the tool in xml");
+    // "Store via dsml" mimics a NEWER brain build that answers with the
+    // fullwidth-bar / "DSML" native XML dialect AND cleans the hyphenated tool
+    // name to an underscore (store_entity) — the backend must parse the fence
+    // dialect, canonicalise the name back to store-entity, execute it, and
+    // never hand the markup to the user.
+    const wantsDsmlStore = String(lastUser?.content || "").includes("Store via dsml");
     // "Loop the tools" makes the mock brain request tools on every round, so
     // the server-side round budget is exercised; like a real brain, it stops
     // looping once told the budget is reached.
@@ -1350,6 +1385,22 @@ before(async () => {
           message: {
             role: "assistant",
             content: '<|tool_calls|><|invoke| name="list-my-facts"><|parameter| name="about" string="true">Pizza<|/parameter|><|/invoke|><|/tool_calls|>',
+          },
+        }],
+      }));
+    }
+    if (wantsDsmlStore && body.tools && !hasToolResult) {
+      toolRequests.push(body);
+      return res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "\u003c\uFF5CDSML\uFF5Ctool_calls\u003e"
+              + "\u003c\uFF5CDSML\uFF5Cinvoke name=\"store_entity\"\u003e"
+              + "\u003c\uFF5CDSML\uFF5Cparameter name=\"name\" string=\"true\"\u003eDsml Entity\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
+              + "\u003c\uFF5CDSML\uFF5Cparameter name=\"type\" string=\"true\"\u003ething\u003c/\uFF5CDSML\uFF5Cparameter\u003e"
+              + "\u003c/\uFF5CDSML\uFF5Cinvoke\u003e"
+              + "\u003c/\uFF5CDSML\uFF5Ctool_calls\u003e",
           },
         }],
       }));
@@ -2077,6 +2128,37 @@ test("a brain answering with native tool-call XML in the content still executes 
   assert.ok(assistantTurn, "the parsed tool calls ride on the assistant turn");
   assert.equal(assistantTurn.tool_calls[0].function.name, "list-my-facts");
   assert.equal(assistantTurn.tool_calls[0].id, toolMessage.tool_call_id, "tool result references the parsed call id");
+});
+
+test("a brain answering with the newer DSML XML and an underscore tool name still executes the canonical tool, never shows the XML", async () => {
+  const origin = origins[1];
+  const backend = backends[1];
+  const adminCookie = await login(origin, "admin");
+
+  toolRequests = [];
+  finalRequests = [];
+  const logStart = backend.logs.length;
+  const response = await fetch(`${origin}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie: adminCookie },
+    body: JSON.stringify({ prompt: "Store via dsml", mcp: { graph: true, websearch: false } }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  // The DSML markup and the model's underscore name must NOT leak to the user.
+  assert.doesNotMatch(result.answer, /DSML|store_entity|\uFF5C/, `markup leaked into the answer: ${result.answer}`);
+  // The fence dialect was parsed AND the underscore name was canonicalised:
+  // the mock MCP received the CANONICAL hyphenated tool name, with the args.
+  const logDelta = backend.logs.slice(logStart);
+  assert.match(logDelta, /MOCK_GRAPH_CALL store-entity/, `canonical tool not reached: ${logDelta}`);
+  assert.doesNotMatch(logDelta, /MOCK_GRAPH_CALL store_entity/, "the underscore name must not reach the MCP");
+  assert.match(logDelta, /\\"name\\":\\"Dsml Entity\\",\\"type\\":\\"thing\\"/);
+  assert.match(logDelta, /\\"user\\":\\"admin\\",\\"admin\\":true/);
+  // The write was verified on its success prefix and audited as a write.
+  const activity = await (await auth(origin, "/api/graph/activity", adminCookie)).json();
+  assert.ok(
+    activity.entries.some((entry) => entry.kind === "brain_write" && entry.tool === "store-entity" && entry.ok),
+    JSON.stringify(activity.entries),
+  );
 });
 
 test("admin turns are not auto-ingested: the service account mints no owner=admin entities", async () => {

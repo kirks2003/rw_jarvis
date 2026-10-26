@@ -223,6 +223,21 @@ external (mesh-internal + github-ro) MCP calls against each tool's
 `create_task_kandev`, …) before dispatch; failures fall back to the raw
 args. Covered by `tests/mcp.test.mjs`.
 
+### 4.5 Brain native tool-call recovery (2026-10-26)
+
+The brain is offered tools via the OpenAI `tools` field, but DeepSeek/Qwen
+behind the OpenAI-compatible proxy intermittently answer with the model's
+NATIVE tool-call XML inside `content` instead of the `tool_calls` field.
+`graphdb.parseToolCallsFromContent` recovers those calls so they are executed
+(not spoken/rendered as the answer). The special-token fence around each tag
+name varies between builds — old ASCII-pipe (`<|invoke|`) and the newer
+fullwidth-bar "DSML" dialect (`<｜DSML｜invoke`) — so every fence slot is
+matched leniently (an empty fence, or any run of ASCII/fullwidth bars with an
+optional "DSML" between). The dispatcher also canonicalises the tool name
+before routing (some models "clean" `store-entity` to `store_entity`); names
+that match no static tool (the namespaced external + Vikunja tools) pass
+through unchanged. Covered by `tests/graph.test.mjs`.
+
 ---
 
 ## 5. Login and authentication
@@ -298,10 +313,23 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-5`
+- Latest: `2026.10.26-6`
 
 ### 7.1 Release notes
 
+- **`2026.10.26-6` (this repo):** fixed the native tool-call XML leak. The
+  brain (DeepSeek/Qwen behind the OpenAI-compatible proxy) intermittently
+  returns its NATIVE tool-call markup inside `content` instead of the OpenAI
+  `tool_calls` field; the backend's `parseToolCallsFromContent` fallback was
+  only tolerant of the OLD ASCII-pipe dialect (`<|invoke| name="...">`).
+  Newer builds emit a FULLWIDTH-bar / "DSML" dialect (`<｜DSML｜invoke
+  name="...">`) that the parser did not recognise, so the raw XML was spoken
+  and rendered in the conversation panel instead of being executed. The
+  fence is now matched leniently in every slot (empty, or any run of
+  ASCII/fullwidth bars with an optional "DSML" between), and the dispatcher
+  canonicalises the tool name before routing (some models "clean"
+  `store-entity` to `store_entity`) so the call still reaches the right tool.
+  Rolled out to all three hosts 2026-10-26.
 - **`2026.10.26-5` (this repo):** two features. (1) The endpoint panel's
   cost section gained an on/off **switch** (top-right, below Sign out, saved
   per browser): off hides the cost panel and the page reflows; polling and

@@ -1705,24 +1705,32 @@ function createMemoryStore(users = []) {
 }
 
 // Recover OpenAI-shaped tool calls when the brain returned them as native
-// XML inside the message content (DeepSeek behind an OpenAI-compatible proxy
-// does this intermittently):
-//   <|tool_calls|><|invoke| name="list-my-facts"><|parameter|
-//   name="relation" string="true">PART_OF<|/parameter|><|/invoke|>
-//   <|/tool_calls|>
-// Unparsed, that XML would be spoken and rendered as the answer. The anchors
-// (invoke/parameter tags with name="...") are matched leniently: the wrapper
-// tokens vary between model builds. Returns [] for ordinary answers — the
-// gate requires the tool_calls wrapper, or both an invoke and a parameter
-// tag, so prose that merely mentions these words is never reinterpreted.
+// XML inside the message content (DeepSeek/Qwen behind an OpenAI-compatible
+// proxy do this intermittently). Two token dialects are seen in the wild:
+//   old DeepSeek:  <|tool_calls|><|invoke| name="list-my-facts"><|parameter|
+//                  name="relation" string="true">PART_OF<|/parameter|>
+//                  <|/invoke|><|/tool_calls|>        (ASCII pipes)
+//   newer builds:  <｜DSML｜tool_calls><｜DSML｜invoke name="store-entity">
+//                  <｜DSML｜parameter name="name" string="true">nbg-1
+//                  </｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>
+//                  (fullwidth U+FF5C bars with a "DSML" infix)
+// Unparsed, that XML would be spoken and rendered as the answer. The special
+// token FENCE that wraps each tag name varies between builds, so every fence
+// slot (before the tag, after it, and around the closing slash) is matched
+// leniently: an empty fence, or any run of ASCII/fullwidth bars with an
+// optional "DSML" between. The anchors (invoke/parameter tags with name="...")
+// still gate the parse, so prose that merely mentions these words is never
+// reinterpreted. Returns [] for ordinary answers.
+const TOOL_CALL_FENCE = "[|\\uFF5C]*(?:DSML)?[|\\uFF5C]*";
 function parseToolCallsFromContent(content) {
   const text = typeof content === "string" ? content : "";
-  const looksLikeToolCallXml = /<\|?tool_calls\|?/.test(text)
-    || (/<\|?invoke\|?\s+name="/.test(text) && /<\|?parameter\|?\s+name="/.test(text));
+  const looksLikeToolCallXml = new RegExp(`<${TOOL_CALL_FENCE}tool_calls`).test(text)
+    || (new RegExp(`<${TOOL_CALL_FENCE}invoke${TOOL_CALL_FENCE}\\s+name="`).test(text)
+      && new RegExp(`<${TOOL_CALL_FENCE}parameter${TOOL_CALL_FENCE}\\s+name="`).test(text));
   if (!looksLikeToolCallXml) return [];
   const calls = [];
-  const invokeRe = /<\|?invoke\|?\s+name="([^"]+)"[^>]*>([\s\S]*?)<\|?\/invoke\|?/g;
-  const paramRe = /<\|?parameter\|?\s+name="([^"]+)"[^>]*>([\s\S]*?)<\|?\/parameter\|?/g;
+  const invokeRe = new RegExp(`<${TOOL_CALL_FENCE}invoke${TOOL_CALL_FENCE}\\s+name="([^"]+)"[^>]*>([\\s\\S]*?)<${TOOL_CALL_FENCE}/${TOOL_CALL_FENCE}invoke${TOOL_CALL_FENCE}`, "g");
+  const paramRe = new RegExp(`<${TOOL_CALL_FENCE}parameter${TOOL_CALL_FENCE}\\s+name="([^"]+)"[^>]*>([\\s\\S]*?)<${TOOL_CALL_FENCE}/${TOOL_CALL_FENCE}parameter${TOOL_CALL_FENCE}`, "g");
   let block;
   while ((block = invokeRe.exec(text)) !== null && calls.length < 8) {
     const args = {};

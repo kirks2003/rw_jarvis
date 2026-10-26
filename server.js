@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-5").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-6").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -3023,6 +3023,24 @@ function graphToolDetail(name, args) {
   return parts.length ? `${name}: ${parts.join(", ")}` : name;
 }
 
+// The brain is offered the graph tools with HYPHEN names (store-entity) but
+// some models — DeepSeek/Qwen behind an OpenAI-compatible proxy, especially
+// when they fall back to native XML tool calls — "clean" the name to an
+// underscore (store_entity). Without this the call would fall through to the
+// unknown-tool branch and nothing would be written. Map a model-emitted name
+// onto its canonical static-tool form by comparing with all separators
+// (-, _, space) removed and lowercased. Names that match no static tool
+// (the namespaced <id>_<tool> external MCP tools and the Vikunja tools) are
+// returned unchanged so their exact-name lookups still work.
+const STATIC_TOOL_SETS = [GRAPH_TOOL_NAMES, GRAPH_WRITE_TOOL_NAMES, HISTORY_TOOL_NAMES, WEB_TOOL_NAMES];
+const STATIC_TOOL_BY_KEY = new Map();
+for (const set of STATIC_TOOL_SETS) for (const name of set) STATIC_TOOL_BY_KEY.set(name.toLowerCase().replace(/[-_\s]+/g, ""), name);
+function canonicalizeToolName(name) {
+  const raw = String(name || "");
+  if (STATIC_TOOL_SETS.some((set) => set.has(raw))) return raw;
+  return STATIC_TOOL_BY_KEY.get(raw.toLowerCase().replace(/[-_\s]+/g, "")) || raw;
+}
+
 async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs }) {
   const local = [...messages];
   const totalSignal = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
@@ -3105,7 +3123,10 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
       ? { role: "assistant", content: message.content, tool_calls: toolCalls }
       : { ...message, role: "assistant" });
     for (const call of toolCalls) {
-      const name = String(call.function?.name || "");
+      // Some models mangle the offered tool name (store-entity ->
+      // store_entity); canonicalise before any dispatch so the call still
+      // routes. Unknown/external names pass through unchanged.
+      let name = canonicalizeToolName(call.function?.name);
       let args = {};
       try { args = JSON.parse(call.function?.arguments || "{}"); } catch { /* malformed args -> error result below */ }
       const started = Date.now();
