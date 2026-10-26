@@ -1278,6 +1278,29 @@ test("brain requests carry a reasoning-safe token budget and an exhausted budget
   mode = "success";
 });
 
+test("brain requests use the panel token budget (brainMaxTokens), clamped to 1K..2048K", async () => {
+  mode = "success";
+  const ask = (sessionId, brainMaxTokens) => auth(origin, "/api/chat", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "Hello", sessionId, ...(brainMaxTokens === undefined ? {} : { brainMaxTokens }) }),
+  });
+  // No slider value: the default 4096-token budget rides.
+  let response = await ask("budget-default");
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 4096);
+  // The endpoint panel's slider (brainMaxTokens) overrides it.
+  response = await ask("budget-8k", 8192);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 8192);
+  // Out-of-range values are clamped to the 1K..2048K window.
+  response = await ask("budget-low", 10);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 1024);
+  response = await ask("budget-high", 999999999);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(received.toString("utf8")).max_tokens, 2048 * 1024);
+});
+
 test("TTS proxy returns upstream audio and reports configuration", async () => {
   mode = "success";
   const config = await (await auth(origin, "/api/config")).json();

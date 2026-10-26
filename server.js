@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-6").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-7").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -1698,7 +1698,7 @@ const server = http.createServer(async (req, res) => {
       if (!profile) return json(res, 503, { error: "brain_not_configured", requestId });
       const result = await chat(prompt, req.user, normalizeLanguage(payload.language) || "en", profile, requestId, controller.signal, normalizeMcpFlags(payload),
         String(payload.wakePhrase || "").slice(0, 60), req.headers.host, normalizeHistorySettings(payload.historySearch),
-        normalizeBrainTimeoutMin(payload.brainTimeoutMin));
+        normalizeBrainTimeoutMin(payload.brainTimeoutMin), normalizeBrainMaxTokens(payload.brainMaxTokens));
       return json(res, 200, result);
     }
 
@@ -2420,7 +2420,23 @@ function normalizeBrainTimeoutMin(value) {
   return Math.min(BRAIN_TIMEOUT_MAX_MINUTES, Math.max(BRAIN_TIMEOUT_MIN_MINUTES, Math.round(minutes))) * 60000;
 }
 
-async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings(), brainTimeoutMs = null) {
+// The brain's per-answer token budget (max_tokens). The endpoint panel's
+// budget slider sets it per request, clamped to 1K..2048K; the BRAIN_MAX_TOKENS
+// env overrides the 4096 default for deployments. The brain is a reasoning
+// model, so the budget covers its thinking tokens too — an undersized one is
+// spent on reasoning and the reply comes back with empty content
+// (finish_reason "length").
+const BRAIN_MAX_TOKENS_MIN = 1024;
+const BRAIN_MAX_TOKENS_MAX = 2048 * 1024;
+const BRAIN_MAX_TOKENS_DEFAULT = Math.min(BRAIN_MAX_TOKENS_MAX, Math.max(BRAIN_MAX_TOKENS_MIN, Number(process.env.BRAIN_MAX_TOKENS) || 4096));
+
+function normalizeBrainMaxTokens(value) {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens)) return null;
+  return Math.min(BRAIN_MAX_TOKENS_MAX, Math.max(BRAIN_MAX_TOKENS_MIN, Math.round(tokens)));
+}
+
+async function chat(prompt, user, language, brainProfile, requestId, signal, mcpFlags, wakePhrase, host, historySettings = normalizeHistorySettings(), brainTimeoutMs = null, brainMaxTokens = null) {
   if (!brainProfile?.configured || String(brainProfile.apiKey).includes("PUT-YOUR")) {
     throw new Error("Brain endpoint/model is not configured");
   }
@@ -2577,9 +2593,11 @@ async function chat(prompt, user, language, brainProfile, requestId, signal, mcp
   // One overall deadline for the whole run (LLM rounds + tool round-trips):
   // the browser waits out the same budget (plus margin) client-side, so the
   // panel's brain-timeout slider can stretch it to 600 minutes for long MCP
-  // tool chains (e.g. a Kandev task) instead of a "signal timed out".
+  // tool chains (e.g. a Kandev task) instead of a "signal timed out". The
+  // panel's token-budget slider rides as maxTokens (default 4096) and bounds
+  // how many tokens the brain may spend thinking + answering.
   const { data, webResults, webSources, graphUsed, graphWriteSucceeded } = await runBrain({ messages, brainProfile, user, useTools: Boolean(mcpFlags.graph && graphStore), webTools: Boolean(mcpFlags.websearch), webSourcesList, vikunjaTools, vikunjaClient, vikunjaToolNames, externalMcp: externalMcpEntries, admin: isAdmin(user), lang: language === "de" ? "de" : "en", historySettings, requestId, signal, headers,
-    deadlineMs: brainTimeoutMs ?? BRAIN_TIMEOUT_DEFAULT_MS });
+    deadlineMs: brainTimeoutMs ?? BRAIN_TIMEOUT_DEFAULT_MS, maxTokens: brainMaxTokens ?? BRAIN_MAX_TOKENS_DEFAULT });
   const answer = extractAnswer(data);
   if (!answer) {
     const finishReason = data?.choices?.[0]?.finish_reason || "";
@@ -3041,7 +3059,7 @@ function canonicalizeToolName(name) {
   return STATIC_TOOL_BY_KEY.get(raw.toLowerCase().replace(/[-_\s]+/g, "")) || raw;
 }
 
-async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs }) {
+async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs, maxTokens = BRAIN_MAX_TOKENS_DEFAULT }) {
   const local = [...messages];
   const totalSignal = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
   // Web tool results collected for post-turn ingestion (the extractor reads
@@ -3065,9 +3083,10 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
       temperature: 0.2,
       // The brain is a reasoning model: max_tokens covers its thinking tokens
       // too, so an undersized budget is spent on reasoning and the reply comes
-      // back with empty content (finish_reason "length"). 4096 leaves ~26 s of
-      // budget at the measured ~150 tok/s while staying inside the timeout.
-      max_tokens: 4096,
+      // back with empty content (finish_reason "length"). The budget is set by
+      // the endpoint panel's slider (default 4096), so a complex ask can be
+      // given more room without a code change.
+      max_tokens: maxTokens,
     };
     if (hasTools) body.tools = [...(useTools ? graphTools(admin) : []), ...(webToolsOn ? webTools() : []), ...(vikunjaTools || []), ...externalMcp.flatMap((entry) => entry.openai), ...historyTools()];
     let data;
@@ -3110,7 +3129,7 @@ async function runBrain({ messages, brainProfile, user, useTools, webTools: webT
       local.push({ ...message, role: "assistant" }, { role: "user", content: "Tool budget reached. Answer now from what you have gathered." });
       const fallback = await fetch(`${brainProfile.baseUrl}/chat/completions`, {
         method: "POST", signal: totalSignal, headers,
-        body: JSON.stringify({ model: brainProfile.model, messages: local, temperature: 0.2, max_tokens: 4096 }),
+        body: JSON.stringify({ model: brainProfile.model, messages: local, temperature: 0.2, max_tokens: maxTokens }),
       });
       const fallbackText = await fallback.text();
       if (!fallback.ok) throw new Error(`Brain HTTP ${fallback.status}: ${fallbackText.slice(0, 500)}`);

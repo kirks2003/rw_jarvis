@@ -23,6 +23,7 @@ const el = Object.fromEntries([
   "languageSwitch", "languageStatus", "mcpMasterSwitch", "mcpMasterStatus",
   "aiProfileSelect", "aiProfileStatus", "aiProfileLed", "whisperProfileSelect", "whisperProfileStatus", "whisperProfileLed",
   "brainTimeoutSlider", "brainTimeoutValue",
+  "brainBudgetSlider", "brainBudgetValue",
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
@@ -69,8 +70,15 @@ const historySearchStorageKey = "jarvis.historySearch";
 const aiProfileStorageKey = "jarvis.aiProfile";
 const whisperProfileStorageKey = "jarvis.whisperProfile";
 const brainTimeoutStorageKey = "jarvis.brainTimeoutMin";
+const brainBudgetStorageKey = "jarvis.brainBudgetK";
 const BRAIN_TIMEOUT_MIN_MINUTES = 1;
 const BRAIN_TIMEOUT_MAX_MINUTES = 600;
+// The brain's per-answer token budget, in K (1K..2048K), from the endpoint
+// panel's slider. Rides with every /api/chat request as brainMaxTokens; the
+// server clamps it to the same window.
+const BRAIN_BUDGET_MIN_K = 1;
+const BRAIN_BUDGET_MAX_K = 2048;
+const BRAIN_BUDGET_DEFAULT_K = 4;
 // 2026-10-21 (later still) owner request: the two mouse-resize fields (the
 // history/answer list and the prompt textarea) remember their grip position
 // per browser.
@@ -120,6 +128,10 @@ let whisperProfileId = "";
 // endpoint panel's slider. Rides with every /api/chat request; the server
 // clamps it to the 1..600 minute range.
 let brainTimeoutMin = BRAIN_TIMEOUT_MIN_MINUTES;
+// The brain's per-answer token budget, in K, from the endpoint panel's slider.
+// The brain is a reasoning model, so this bounds both its thinking and its
+// reply. Rides with every /api/chat request; the server clamps it to 1K..2048K.
+let brainBudgetK = BRAIN_BUDGET_DEFAULT_K;
 const mcpServers = [];
 const mcpFlags = {};
 let current = null;
@@ -386,6 +398,29 @@ el.brainTimeoutSlider.addEventListener("input", () => {
     localStorage.setItem(brainTimeoutStorageKey, String(brainTimeoutMin));
   } catch (error) {
     log("settings", "Could not save the brain timeout", { message: error.message });
+  }
+});
+
+// The brain's per-answer token budget (in K). Like the timeout slider it is
+// saved per browser and bounds the NEXT brain request only, so no pipeline
+// interrupt is needed. Nothing saved yet -> the 4K default, not the 1K floor,
+// so a fresh browser keeps the current (4096-token) behavior.
+function applyBrainBudget(k) {
+  const raw = k === null || k === undefined ? "" : String(k);
+  const value = Number(raw);
+  brainBudgetK = (raw !== "" && Number.isFinite(value))
+    ? Math.min(BRAIN_BUDGET_MAX_K, Math.max(BRAIN_BUDGET_MIN_K, Math.round(value)))
+    : BRAIN_BUDGET_DEFAULT_K;
+  el.brainBudgetSlider.value = String(brainBudgetK);
+  el.brainBudgetValue.textContent = `${brainBudgetK}K`;
+}
+
+el.brainBudgetSlider.addEventListener("input", () => {
+  applyBrainBudget(el.brainBudgetSlider.value);
+  try {
+    localStorage.setItem(brainBudgetStorageKey, String(brainBudgetK));
+  } catch (error) {
+    log("settings", "Could not save the brain token budget", { message: error.message });
   }
 });
 
@@ -2495,8 +2530,9 @@ async function answer(session, prompt) {
           method: "POST", headers: { "content-type": "application/json" },
           // The brain answers as the wake word's name, so the active phrase
           // (server default or personal override) travels with every request;
-          // the panel's brain-timeout slider travels as brainTimeoutMin.
-          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings, brainTimeoutMin }),
+          // the panel's brain-timeout slider travels as brainTimeoutMin and its
+          // token-budget slider as brainMaxTokens (K * 1024).
+          body: JSON.stringify({ prompt, sessionId, language, mcp: mcpFlags, wakePhrase: config.wakePhrase, brainProfile: aiProfileId, historySearch: historySearchSettings, brainTimeoutMin, brainMaxTokens: brainBudgetK * 1024 }),
           signal: brainSpeech.signal,
           // Wait out the server-side brain deadline (brainTimeoutMin) plus a
           // margin for the pre-brain steps (web search, graph context).
@@ -3516,6 +3552,13 @@ async function loadConfig(userFromLogin) {
       log("settings", "Could not load the brain timeout", { message: error.message });
     }
     el.brainTimeoutSlider.disabled = false;
+    try {
+      applyBrainBudget(localStorage.getItem(brainBudgetStorageKey));
+    } catch (error) {
+      applyBrainBudget(BRAIN_BUDGET_DEFAULT_K);
+      log("settings", "Could not load the brain token budget", { message: error.message });
+    }
+    el.brainBudgetSlider.disabled = false;
     // Show the connection state of both active endpoints right away.
     testEndpoint("brain", aiProfileId, el.aiProfileLed, el.aiProfileStatus);
     testEndpoint("whisper", whisperProfileId, el.whisperProfileLed, el.whisperProfileStatus);

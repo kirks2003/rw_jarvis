@@ -117,6 +117,17 @@ server clamps it to that range and uses it instead of the default, and the
 browser waits out the same budget client-side. Long MCP chains (e.g. a
 Kandev task) no longer end in a "signal timed out".
 
+**Brain token budget (2026-10-26):** the brain is a reasoning model, so its
+per-answer `max_tokens` covers its thinking tokens too — an undersized
+budget is spent on reasoning and the reply comes back empty
+(`finish_reason "length"`, "The brain spent its whole token budget on
+reasoning"). The endpoint panel's **Brain token budget** slider (1K–2048K,
+saved per browser) rides with each `/api/chat` as `brainMaxTokens`; the
+server clamps it to that window and uses it as `max_tokens` (default
+`BRAIN_MAX_TOKENS` env, 4096). It bounds the *tokens*, not the time — the
+Brain timeout slider above still bounds the wall clock, so the two work
+together: a bigger budget needs enough time to generate.
+
 **Per-user persona (2026-10-26):** the assistant's persona is no longer a
 single hardcoded butler. Each owner can store their own personality in the
 knowledge graph (one `:Personality` node per owner — free text, `updated_at`,
@@ -313,10 +324,21 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-6`
-
+ - Latest: `2026.10.26-7`
+ 
 ### 7.1 Release notes
-
+ 
+- **`2026.10.26-7` (this repo):** the endpoint panel gained a **Brain token
+  budget** slider (1K–2048K, saved per browser) that rides with each
+  `/api/chat` as `brainMaxTokens`; the server clamps it to that window and
+  uses it as the brain's per-answer `max_tokens` (default `BRAIN_MAX_TOKENS`
+  env, 4096). The brain is a reasoning model, so an undersized budget is
+  spent on reasoning and the reply comes back empty
+  ("The brain spent its whole token budget on reasoning and returned no
+  answer") — the slider lets a complex ask get more room to think and answer
+  without a code change. It bounds the tokens, not the time; the Brain
+  timeout slider still bounds the wall clock. The graph-extraction call keeps
+  its own fixed 4096 budget. Rolled out to all three hosts 2026-10-26.
 - **`2026.10.26-6` (this repo):** fixed the native tool-call XML leak. The
   brain (DeepSeek/Qwen behind the OpenAI-compatible proxy) intermittently
   returns its NATIVE tool-call markup inside `content` instead of the OpenAI
