@@ -4997,3 +4997,53 @@ Brain token budget slider; until then their requests simply omit
 `brainMaxTokens` and the server uses the 4096 default (unchanged behavior).
 All three deployments are now at `2026.10.26-7`, identical in-image and on
 disk.
+
+## 2026-10-26: 2026.10.26-8 — text field next to the brain token budget slider
+
+**Change (feature).** The endpoint panel's **Brain token budget** control
+(added in `2026.10.26-7`) gained a companion **text field** next to the
+1K..2048K slider, for exact values. Both hold the same K value and whichever
+is set takes effect: dragging the slider updates the field live, and typing a
+value commits on blur/Enter (clamped to 1K..2048K; a non-numeric or empty
+entry reverts to the last value) and moves the slider. No new request field —
+the field sets the same `brainMaxTokens` the slider already sent, so the
+server is unchanged apart from the version marker.
+
+**Changed files:** `public/index.html` (the slider now sits in a
+`.brain-budget-row` with the `#brainBudgetInput` text field + a "K" unit),
+`public/style.css` (`.brain-budget-row` layout; the field styled to match the
+app's text inputs), `public/app.js` (`brainBudgetInput` id; `applyBrainBudget`
+keeps the field in sync; a `change` handler that applies on commit and reverts
+invalid input; the field enabled at init). `server.js` only carries the new
+version marker. Test: `tests/pipeline.browser.mjs` (the budget test now drives
+both controls and asserts slider↔field sync, clamp, invalid revert, the
+request value, and reload persistence on both).
+
+**Verification (2026-10-26 ~18:46 UTC, dev worktree):** unit 214/214
+(server unchanged), browser 66 pass / 0 fail / 2 skipped (the 2 intentional
+live-vm103 skips). The rewritten budget test
+("the brain token budget slider and text field share one value and ride with
+the chat request") passed in isolation.
+
+**Rollout, lockstep, changed files only:**
+- **vm104**: backup `jarvis-scoped-2026.10.26-8-20261026T174414Z.tar.gz`,
+  scp `server.js` + the three `public/` files + the test, build/recreate.
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-8`, in-image
+  md5s match disk and repo (`server.js 5e6063a3…`, `app.js 2a7a73e7…`,
+  `index.html 9d9a28a0…`, `style.css ee57f598…`); `brainBudgetInput` present
+  in the served `index.html`.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup `jarvis-scoped-2026.10.26-8-20261026T174503Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-8`, md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup `jarvis-scoped-2026.10.26-8-20261026T174558Z.tar.gz`,
+  same files, same build/recreate. `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.26-8`, md5s identical to vm104.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). Panel statics
+changed, so browsers need a hard refresh (Ctrl+Shift+R) to see the text
+field; until then the slider alone still works and requests are unchanged.
+All three deployments are now at `2026.10.26-8`, identical in-image and on
+disk.
