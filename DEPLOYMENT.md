@@ -4636,6 +4636,62 @@ the panel statics changed, so browsers need a hard refresh
   "close match probe xyz thing")` — the entity was actually deleted; and
   the not-found path → `No entity named "quantum entanglement device"
   owned by Roman in the graph. The deletion did not happen.` (a non-error
-  result the backend now audits `ok:false` and feeds back as "The
-  operation did NOT succeed"). All probe entities cleaned up; nothing
-  left behind.
+   result the backend now audits `ok:false` and feeds back as "The
+   operation did NOT succeed"). All probe entities cleaned up; nothing
+   left behind.
+
+## 2026-10-26: 2026.10.26-2 — one-cell thinking comet, repo-move rollout to all three hosts
+
+**Release (this repo, `rw_jarvis`).** The app's code source of truth moved
+into `kirks2003/rw_jarvis` (the `jarvis/` directory was removed from
+`rwnix-infra` the same day). This release ships two things to the running
+containers: (1) the one-cell animated thinking comet in the conversation
+panel (opencode-style — `public/app.js` `THINKING_FRAMES` quadrant orbit
+▖ ▀ ▐ ▔ ▌ cycled at 70 ms with a per-frame opacity pulse, easing to 95 ms
+after 30 s, static glyph under `prefers-reduced-motion`; one char in the
+pending body replacing the old blinking caret, one small one after the
+"Jarvis" head label, both disposed on every exit path), and (2) the
+`server.js` union — the 2026-10-24 host backup (github-ro MCP, ElevenLabs
+voice provider, persona-memory wiring, env-overridable version marker) plus
+the 2026-10-25 `normalize-external-args.cjs` fix, which the 2026-10-25
+targeted deploy had overwritten on the hosts. Deploying it re-enables those
+env-gated features on hosts whose `.env` carries the vars.
+
+**Changed files (deployed to the image):** `server.js`, `public/app.js`,
+`public/style.css` (caret CSS removed, `.thinking-char` glow added),
+`public/theme-a1.css` (softened glow for the white theme). Host-tree only,
+not in the image: `tests/graph.browser.mjs` + `tests/pipeline.browser.mjs`
+synced to the documented 2026-10-23 behavior (stale on vm104; synced on all
+three trees for consistency) — the unit tests already matched the repo.
+
+**Rollout (2026-10-26 ~14:10–14:20 UTC), lockstep, changed files only:**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-backups/jarvis-scoped-2026.10.26-2-20261026T130951Z.tar.gz`
+  (browser-test pre-snapshot
+  `jarvis-browser-tests-pre-20261026T131500Z.tar.gz`), scp 4 files,
+  `docker compose build jarvis`, `up -d --no-build --pull never
+  --force-recreate jarvis`. Result: `running|healthy`, `/api/health` 200
+  with `appVersion 2026.10.26-2` (`brainConfigured: true`, 5 AI profiles,
+  3 whisper endpoints, 1 TTS endpoint), in-image md5s match disk and repo:
+  `server.js 5f052b39…`, `public/app.js e10a2165…`, `public/style.css
+  b2199946…`, `public/theme-a1.css 8822d730…`. Served statics are the new
+  versions — **browsers need a hard refresh (Ctrl+Shift+R)** to see the
+  comet. Host test suites: unit 205/205, browser 64 pass / 0 fail / 2
+  skipped (the intentional live-vm103 skips).
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.116.11): backup
+  `jarvis-scoped-2026.10.26-2-20261026T131649Z.tar.gz`, same build/recreate.
+  Result: `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-2`,
+  md5s identical to vm104.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, via nbg-1 →
+  192.168.115.11): backup
+  `jarvis-scoped-2026.10.26-2-20261026T131756Z.tar.gz`, same build/recreate.
+  Result: `running|healthy`, `/api/health` 200, `appVersion 2026.10.26-2`,
+  md5s identical to vm104.
+
+**Effect on live data:** none. The container restart clears in-memory login
+sessions (the next sign-in re-establishes them, as designed). All three
+deployments are now at `2026.10.26-2`, identical in-image and on disk.
+Note: a pre-existing stray `mcp/checkmk.mjs.bak-20261022T104354Z` backup
+file sits inside the images (host-side leftover from a 2026-10-22 hotfix,
+present before this rollout); harmless, left in place.
