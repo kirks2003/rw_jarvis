@@ -6,6 +6,38 @@ BRAIN.md; deployment history lives in DEPLOYMENT.md; the app architecture in
 AGENTS.md. Use this file to answer "why did X happen / what did we learn / what
 gotcha should I know?".
 
+## 2026-10-27
+
+### The nightly DR sync corrupts the DR Neo4j (volume overwritten while the DB runs)
+- **Found:** while verifying gra-1 + lim-1 during the planned pve104
+  downtime, both DR `jarvis-neo4j` containers were in `critical` state
+  (`AlreadyClosedException: Underlying file changed by an external force at
+  2026-10-26T02:18:09Z`).
+- **Root cause:** nbg-1 `jarvis-dr-sync.sh` restores `neo4j_data` while the DB
+  is still running — its stop step logs `no such service: jarvis-neo4j`
+  (wrong service name), so the stop silently fails and the restore hits a
+  live DB. The 2026-10-22 "file was deleted while running" event is the same
+  class of fault.
+- **Fix applied:** `docker restart jarvis-neo4j` then `docker restart jarvis`
+  on both hosts → `graph_indexes_ready created:6`, graph fully back.
+- **Lesson:** never restore a database volume while the DB runs; the sync
+  script must stop the *right* service, verify the stop, and gate the restore
+  on the DB being healthy afterwards. Plan: patch the script in `rw_mesh`.
+  Full report: `DR_VERIFICATION_2026-10-27.md`.
+
+### A dead graph can crash the whole `jarvis` process
+- With Neo4j in `critical` state, `GET /api/graph/status` killed the gra-1
+  `jarvis` process (unhandled neo4j driver error). The graph endpoints should
+  503 "graph unavailable", not take the app down with them. Plan: harden
+  `server.js` (open item, see `DR_VERIFICATION_2026-10-27.md`).
+
+### Browser-suite flake: graph Remove-button test
+- `tests/graph.browser.mjs:193` ("the Remove button deletes the centred
+  entity and refreshes the panel") failed 2 of 3 isolated re-runs, but the app
+  request itself was correct on failure (`centerSeen==="n0"`, neighbourhood
+  shown) — a harness timeout under sandbox load, not an app bug. Re-run once
+  before treating it as a regression.
+
 ## 2026-10-26
 
 ### "The app is getting a budget problem again" — it was the brain's *answer*, not a crash

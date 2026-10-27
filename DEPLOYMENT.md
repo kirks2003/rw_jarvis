@@ -5264,3 +5264,39 @@ hard refresh (Ctrl+Shift+R) to pick up the wider tool-rounds range (1–1000)
 and the new text field; a saved tool-rounds value is kept as-is, and the
 slider starts at the 5-round default for browsers with no saved value. All
 three deployments are now at `2026.10.26-11`, identical in-image and on disk.
+
+## 2026-10-27: DR verification during the planned pve104 downtime + DR Neo4j recovery (no app change)
+
+No app code deployed, no `APP_RELEASE_VERSION` bump — this was verification of
+both DR clones while the primary vm104 (`192.168.54.111`) was offline for the
+planned pve104 maintenance, plus an operational recovery on the DR hosts.
+
+**Scope:** full feature check on gra-1 (via nbg-1) and lim-1 (via vie-1) —
+login, all 13 MCP servers (live round-trips: ssh-nbg/ssh-vie1 hostnames,
+vikunja as Roman `projects=2`, graph 369 nodes / 563 edges), 5 brain profiles
++ real `/api/chat`, whisper (gpu-1 + ovhcloud OK; **vm103 down mesh-wide** —
+pve103 unreachable, not DR-specific), TTS + ElevenLabs (44 voices), graph
+status/schema/search/subgraph, history DB (600 conversations Roman 559 /
+Mila 41, 600 embeddings, 140 websearch sources — synced from vm104), costs
+panel (all three providers live), and a live Playwright Chromium UI probe
+(`LIVE-PROBE-OK` on both hosts). Code on both hosts md5-matches the repo
+exactly (disk + in-container, the 2026.10.26-11 hashes above).
+
+**Tests:** unit 216/216 (baseline). Browser 67 pass / 1 fail / 2 skipped —
+the one failure is the known flaky harness timeout at
+`tests/graph.browser.mjs:193` (passes on re-run; app request was correct).
+
+**Host action (both gra-1 and lim-1):** `jarvis-neo4j` was in `critical`
+state since the 2026-10-26 nightly sync (the restore overwrote `neo4j_data`
+while the DB ran — the sync script's stop step fails with
+`no such service: jarvis-neo4j`). Recovered with `docker restart jarvis-neo4j`
+then `docker restart jarvis`; both log `graph_indexes_ready created:6`,
+graph fully back, both services healthy. A `/api/graph/status` probe during
+the outage had crashed the gra-1 `jarvis` process (unhandled neo4j driver
+error) — hardening the graph endpoints is an open item.
+
+**Open follow-ups (none live in this repo):** patch `rw_mesh`
+`scripts/host/jarvis-dr-sync.sh` (stop + verify the DR neo4j before the
+volume restore; gate on DB health after); harden `server.js` graph endpoints
+against unhandled driver errors (503, not a crash). Full report:
+`DR_VERIFICATION_2026-10-27.md`.

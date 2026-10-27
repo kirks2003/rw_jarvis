@@ -340,6 +340,14 @@ Brand: `BRAND=a1` (white theme, a1 logo). Public via NPM row 11
 - **Does NOT sync:** `.env` files (host-specific), application code
   (code updates deploy separately to all three trees)
 
+> **Known issue (2026-10-27):** the script's stop step fails
+> (`no such service: jarvis-neo4j`), so `neo4j_data` is restored while the DR
+> Neo4j is still running and ends up in *critical error* state (happened on
+> both gra-1 and lim-1 after the 2026-10-26 run; fixed by restarting
+> `jarvis-neo4j` + `jarvis` on both hosts). The sync script must stop the DR
+> neo4j correctly and gate the restore on the DB being healthy. Full
+> verification report + fix plan: `DR_VERIFICATION_2026-10-27.md`.
+
 ### 6.3 Failover
 
 On primary loss, change the upstream of NPM rows 44/56 (nbg-1/vie-1
@@ -625,6 +633,7 @@ docker logs jarvis | grep '"level":"error"'        # errors only
 | AGENTS.md | This file — deployment overview, architecture, endpoints, MCP servers, auth, DR, release notes, testing, conventions. |
 | BRAIN.md | The LLM brain deep-reference: the three per-request dials (timeout / token budget / tool rounds), model context windows + safe-max token map, the context-trim guard, per-user persona, and tuning tradeoffs (what a high tool-round count costs). |
 | FINDINGS.md | Dated investigation findings & operational lessons: triaging "budget problem" reports, the context-overflow 400, model context discovery, the concurrent-`main`-merge caution, the partial-deploy regression lesson, log/diagnostic shortcuts. |
+| DR_VERIFICATION_2026-10-27.md | 2026-10-27 DR verification during the pve104 downtime: feature matrix for gra-1 + lim-1 (MCP/AI/history DB/live UI), test results, the Neo4j critical-error root cause (nightly sync) + fix, and the open fix plan (rw_mesh sync script, server.js graph hardening, vm103 outage). |
 | README.md | Product documentation: pipeline, voice, MCP integrations, graph model, login, language switch. |
 | DEPLOYMENT.md | Deployment history and runbook: live service, from-scratch setup, snapshot backup/restore, public NPM routes, per-change deployment log. |
 | VERSIONING_POLICY.txt | Version bump + lockstep deployment policy for `APP_RELEASE_VERSION`. |
