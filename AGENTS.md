@@ -101,6 +101,12 @@ are not part of the app.
 
 Defined via env vars in `.env`. Default profile set by `BRAIN_PROFILE_DEFAULT`.
 
+> **Deep reference: `BRAIN.md`** — the three per-request dials (timeout / token
+> budget / tool rounds), the model context windows + safe-max token map, the
+> context-trim guard, the per-user persona, and the tuning tradeoffs (what a high
+> tool-round count actually costs). Investigation findings and operational
+> lessons: `FINDINGS.md`.
+
 | Profile | Env prefix | Model / Provider |
 |---------|-----------|-----------------|
 | Default | `BRAIN_*` | A1 GPU-2 DeepSeek V4 Flash |
@@ -504,7 +510,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 205/205 pass
+# Baseline: 216/216 pass
 ```
 
 ### 9.2 Browser tests
@@ -513,7 +519,7 @@ npm test
 npm run test:browser
 # node --test tests/*.browser.mjs
 # pipeline.browser.mjs + graph.browser.mjs
-# Baseline: 64 pass / 0 fail / 2 skipped
+# Baseline: 68 pass / 0 fail / 2 skipped
 ```
 
 The 2 skips are intentional live-vm103 backend tests (real Whisper
@@ -587,6 +593,14 @@ docker logs jarvis | grep '"level":"error"'        # errors only
   `git -c credential.useHttpPath=false -c credential.helper=
   -c credential.helper="store --file=$PWD/.git-credentials" push origin main`.
   Never print the token, and never commit `.git-credentials`.
+- **Concurrent merges to `main`:** another agent/process can merge to `main`
+  while you are working. **Always `git fetch origin` and rebase/merge before
+  `git push`**, then confirm your push landed
+  (`git log --oneline origin/main -1` shows your commit). A push after a stale
+  fetch is a non-fast-forward — rebase and push again; **never force-push**.
+- **Keep the doc baselines current:** the test baselines in §9.1/§9.2 and the
+  `Latest` version in §7 are updated on every rollout — bump them in the same
+  commit as the release so a fresh reader is never pointed at a stale count.
 - Keep the Markdown Index at the bottom of this file: for every new or updated
   `.md` file, add or update its index entry
 - All secrets and credentials must stay in host-local `.env` files — never in
@@ -609,6 +623,8 @@ docker logs jarvis | grep '"level":"error"'        # errors only
 | File | Description |
 |---|---|
 | AGENTS.md | This file — deployment overview, architecture, endpoints, MCP servers, auth, DR, release notes, testing, conventions. |
+| BRAIN.md | The LLM brain deep-reference: the three per-request dials (timeout / token budget / tool rounds), model context windows + safe-max token map, the context-trim guard, per-user persona, and tuning tradeoffs (what a high tool-round count costs). |
+| FINDINGS.md | Dated investigation findings & operational lessons: triaging "budget problem" reports, the context-overflow 400, model context discovery, the concurrent-`main`-merge caution, the partial-deploy regression lesson, log/diagnostic shortcuts. |
 | README.md | Product documentation: pipeline, voice, MCP integrations, graph model, login, language switch. |
 | DEPLOYMENT.md | Deployment history and runbook: live service, from-scratch setup, snapshot backup/restore, public NPM routes, per-change deployment log. |
 | VERSIONING_POLICY.txt | Version bump + lockstep deployment policy for `APP_RELEASE_VERSION`. |
