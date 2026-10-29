@@ -5435,3 +5435,83 @@ on 2026.10.26-11):**
 sessions (the next sign-in re-establishes them, as designed). Browsers need a
 hard refresh (Ctrl+Shift+R) to pick up the two new danger buttons. All three
 deployments are now at `2026.10.29-2`, identical in-image and on disk.
+
+## 2026-10-29: 2026.10.29-3 — survive a broken graph database without crashing the process
+
+While the DR Neo4j clones sat in *critical error* state (the recurring
+nightly-sync corruption, see the 2026-10-27 DR verification + §6.2 of
+AGENTS.md), every graph request on those hosts took the whole `jarvis`
+process down. `status()` fans out three parallel queries; when the DB is in
+critical error the first rejection reaches the endpoint's catch (a 502), but
+the neo4j driver (`neo4j-driver` 5.28.3) also rejects an internal
+connection-pool promise the app never observes — an unhandled rejection that
+Node ≥ 15 turns into a process crash → container restart → every in-memory
+login session wiped → the browser's next request is a 403 "forbidden" loop.
+This is exactly what the DR hosts did on 2026-10-29 (gra-1 `RestartCount`
+climbed on every graph-panel load).
+
+**1. Process-level guard (`server.js`).** A
+`process.on("unhandledRejection")` handler now logs
+(`level: "error"`, `msg: "unhandled_rejection"`, error + stack) and keeps
+serving, so any stray async error degrades the affected request, never the
+process. A broken graph DB now shows as a `graph_unavailable` 502 on the
+graph endpoints (the panel degrades) instead of a crash loop that wipes
+sessions.
+
+**2. Rejection-safe graph fan-outs (`graphdb.js`).** A new `allObserved`
+helper observes every branch of a `Promise.all` before awaiting it, so a
+failing database rejects exactly once with a clean `graph_unavailable` 502
+instead of leaking unhandled rejections. Applied to the three DB fan-outs:
+`status()`, `schema()`, and the persona read.
+
+**3. Latent persona-read typo (`graphdb.js`).** The persona *preference*
+query bound `p:Preference` but referenced `t.confidence` / `t.updated_at` —
+an undeclared variable that could never have succeeded (the caller's catch
+silently fell back to no persona). Fixed to `p.*`.
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-3; new `unhandledRejection` handler), `graphdb.js` (new
+`allObserved` helper; the three fan-outs; the persona preference alias
+fix). Host-tree only (not in the image): the two changed test files.
+
+**Tests:** unit 222/222 (was 220, +2: a store whose driver always rejects
+surfaces `status`/`schema` as exactly one error and no unhandled rejections;
+a backend that receives a spawned unhandled rejection logs it and keeps
+serving). Browser 71 pass / 0 fail / 2 skipped (unchanged). In-container
+(Node 20.20.2) unit suite 222/222 on all three hosts.
+
+**Rollout (lockstep, image files `server.js` + `graphdb.js`; the two changed
+test files synced to the host trees):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-3-20261029T135239Z/before.tar.gz`, scp 4 files
+  (disk md5s = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.29-3`, in-image
+  md5s match, in-container unit suite 222/222.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-3-20261029T135406Z/before.tar.gz`,
+  same 4 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-3`, in-container unit suite
+  222/222.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-3-20261029T135528Z/before.tar.gz`,
+  same 4 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-3`, in-container unit suite
+  222/222.
+
+**DR Neo4j recovery (this change, both gra-1 and lim-1):** `jarvis-neo4j`
+was in *critical error* state after the 2026-10-29 nightly sync (same
+stop-step bug as 2026-10-27 — the restore overwrote `neo4j_data` while the
+DB ran). Recovered on both hosts with `docker restart jarvis-neo4j`; both
+came back `healthy` in ~30 s, graph fully served (9 nodes / 10 edges per
+user world), `/api/graph/*` 200. The graph data was never lost.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`c1ee6563b3c44ffc6d26fcd3e5f9cb03`, `graphdb.js`
+`1cb96bcb2a5127491d516393bba56631` (the other five image files unchanged
+from 2026.10.29-2).
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed) — re-login if a
+session went stale. All three deployments are now at `2026.10.29-3`,
+identical in-image and on disk. The DR Neo4j root cause (the nightly sync
+stop step) remains an open `rw_mesh` fix — see the 2026-10-27 report.
