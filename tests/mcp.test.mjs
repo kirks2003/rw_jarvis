@@ -10,8 +10,10 @@ import {
 } from "../mcp/engines.mjs";
 import path from "node:path";
 import normalizeModule from "../mcp/normalize-external-args.cjs";
+import externalToolNameModule from "../mcp/external-tool-name.cjs";
 
 const { normalizeExternalMcpArgs, normalizeCreateTaskKandev, inferLocalRepoPath } = normalizeModule;
+const { externalToolDisplayName } = externalToolNameModule;
 
 test("cleanHtml strips tags and named plus numeric entities", () => {
   assert.equal(cleanHtml("<b>Rocky</b> &amp; the <i>Rolling Stones</i>"), "Rocky & the Rolling Stones");
@@ -460,6 +462,24 @@ test("normalizeExternalMcpArgs applies only to the base Kandev create_task tool"
   const args = { title: "Keep", description: "Old", priority: "high" };
   assert.equal(normalizeExternalMcpArgs("other", args, createTaskSchema), args);
   assert.equal(normalizeExternalMcpArgs("kandev-vm104_create_task_kandev", args, createTaskSchema), args);
+});
+
+test("externalToolDisplayName drops the redundant Kandev _kandev suffix for kandev servers only", () => {
+  // Kandev servers: the redundant "_kandev" suffix is dropped so the
+  // namespaced name the brain naturally calls (kandev-nbg_list_workspaces)
+  // matches the dispatch lookup instead of "Unknown tool".
+  assert.equal(externalToolDisplayName("kandev-nbg", "list_workspaces_kandev"), "list_workspaces");
+  assert.equal(externalToolDisplayName("kandev-vm104", "create_task_kandev"), "create_task");
+  assert.equal(externalToolDisplayName("kandev-vie1", "list_tasks_kandev"), "list_tasks");
+  // A kandev tool WITHOUT the suffix is left as-is.
+  assert.equal(externalToolDisplayName("kandev-nbg", "list_workspaces"), "list_workspaces");
+  // Non-kandev servers are never touched, even if the name ends in "_kandev".
+  assert.equal(externalToolDisplayName("ssh-nbg", "execute_bash"), "execute_bash");
+  assert.equal(externalToolDisplayName("github-ro", "github_repo_info"), "github_repo_info");
+  assert.equal(externalToolDisplayName("checkmk-nbg", "cmk_status_kandev"), "cmk_status_kandev");
+  // Empty/undefined inputs are safe.
+  assert.equal(externalToolDisplayName("", "list_workspaces_kandev"), "list_workspaces_kandev");
+  assert.equal(externalToolDisplayName("kandev-nbg", ""), "");
 });
 
 test("normalizeCreateTaskKandev preserves non-plain arguments", () => {

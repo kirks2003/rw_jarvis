@@ -6,13 +6,14 @@ const crypto = require("node:crypto");
 const Database = require("better-sqlite3");
 const graphdb = require("./graphdb");
 const normalizeExternalMcpArgs = require("./mcp/normalize-external-args.cjs");
+const { externalToolDisplayName } = require("./mcp/external-tool-name.cjs");
 
 const root = __dirname;
 const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-4").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-5").trim();
 
 // A stray async rejection (e.g. a neo4j driver error escaping a catch) must
 // not take the whole service down: Node >= 15 crashes the process on
@@ -2376,7 +2377,10 @@ async function externalMcpToolsFor(entry, signal) {
   const openai = [];
   const lookup = new Map();
   for (const tool of tools) {
-    const name = `${entry.id}_${tool.name}`;
+    // Offer the clean name (the redundant Kandev "_kandev" suffix dropped for
+    // kandev servers) so the brain's natural call matches the lookup; the
+    // dispatch below still uses the original tool.name for the real MCP call.
+    const name = `${entry.id}_${externalToolDisplayName(entry.id, tool.name)}`;
     if (!name) continue;
     lookup.set(name, { client, tool: tool.name, entry, inputSchema: tool.inputSchema });
     openai.push({
