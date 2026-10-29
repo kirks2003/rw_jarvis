@@ -62,6 +62,8 @@ jobs:
             '{site:$site,target:$target,target_vm:$target_vm,state:$state,service:$service,summary:$summary,timestamp:$timestamp}')"
 
           HTTP_CODE="$(curl -sS -o /tmp/lim-response.json -w "%{http_code}" \
+            --connect-timeout 10 \
+            --max-time 25 \
             -H "Content-Type: application/json" \
             -X POST \
             --data "${PAYLOAD}" \
@@ -87,6 +89,8 @@ jobs:
             '{site:$site,target:$target,target_vm:$target_vm,state:$state,service:$service,summary:$summary,timestamp:$timestamp}')"
 
           HTTP_CODE="$(curl -sS -o /tmp/gra-response.json -w "%{http_code}" \
+            --connect-timeout 10 \
+            --max-time 25 \
             -H "Content-Type: application/json" \
             -X POST \
             --data "${PAYLOAD}" \
