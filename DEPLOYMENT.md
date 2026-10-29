@@ -5300,3 +5300,138 @@ error) — hardening the graph endpoints is an open item.
 volume restore; gate on DB health after); harden `server.js` graph endpoints
 against unhandled driver errors (503, not a crash). Full report:
 `DR_VERIFICATION_2026-10-27.md`.
+
+## 2026-10-29: 2026.10.29-1 — per-user delete-all for prompt history and knowledge graph
+
+Two destructive "delete all" buttons, each scoped to the signed-in account's
+own data and each asking for a second, explicit confirm before it sends
+anything (a dismissed confirm sends no request).
+
+**1. History search panel — "Delete all prompt history"
+(`DELETE /api/conversation`).** A regular user deletes only their own stored
+turns; the **admin** session (derived server-side from the session, never from
+the client) deletes every account's turns. The derived embedding vectors are
+removed with the turns — the declared `ON DELETE CASCADE` on
+`conversation_embeddings` is inert because SQLite's foreign-keys pragma is
+off, so the endpoint deletes both tables explicitly — and the in-memory
+short-term cache is dropped for the affected account(s) so the brain's next
+turn starts clean.
+
+**2. Knowledge graph panel + full graph page — "Delete all graph data"
+(`DELETE /api/graph/all` → new `graphStore.removeAll` on both the Neo4j and
+memory stores).** A regular user wipes their own world (entities, fact
+edges, stored persona); the **admin** wipes every user's world. `:User`
+account nodes are structural markers, never data, so they survive and the
+account's world comes back empty but intact. The wipe is recorded as a
+`delete_all` graph-activity entry.
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-1; prepared statements for both deletes incl. the explicit
+embedding delete; `DELETE /api/conversation` + `DELETE /api/graph/all`
+endpoints), `graphdb.js` (`removeAll` on Neo4j store — owner-pinned
+`DETACH DELETE` + `DELETE p` for `:Personality`, admin unpinned — and memory
+store; returns `{entitiesDeleted, personalitiesDeleted}`), `public/index.html`
+(`#historyDeleteAll` + `#historyDeleteAllStatus` in the history search panel;
+`#graphDeleteAllButton` in the graph panel), `public/graph.html`
+(`#graphDeleteAllButton` in the full-page header), `public/app.js` (element
+IDs, admin/user-aware enablement + confirm wording, click handlers with panel
+refresh, `delete_all` activity rendering), `public/graph-page.js` (full-page
+button wiring), `public/style.css` (`.danger-button`, `.history-search-danger`).
+Host-tree only (not in the image): the four test files.
+
+**Tests:** unit 220/220 (was 216, +4: memory-store removeAll isolation,
+Neo4j cypher pinning, conversation delete per-user/admin, graph delete-all
+endpoint scoping); browser 71 pass / 0 fail / 2 skipped (was 68, +3: panel
+confirm/accept/dismiss, full-page button, history panel confirm). vm104 host
+unit suite 220/220.
+
+**Rollout (image files `server.js` + `graphdb.js` + `public/app.js` +
+`public/index.html` + `public/style.css` + `public/graph-page.js` +
+`public/graph.html`; the four changed test files synced to the host trees):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-1-20261029T122828Z/before.tar.gz`, scp 11 files
+  (disk md5s = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.29-1`, in-image
+  md5s match, host unit suite 220/220.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-1-20261029T123057Z/before.tar.gz`,
+  same 11 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-1`, in-image md5s identical.
+- **lim-1:** not rolled out at this version — the 2026.10.29-2 fix below was
+  committed minutes later, so lim-1 went straight from 2026.10.26-11 to
+  2026.10.29-2 (see next entry).
+
+## 2026-10-29: 2026.10.29-2 — Node 20 bounded request deadlines (AbortSignal.any undici gap)
+
+The in-container test run of 2026.10.29-1 exposed a pre-existing production
+bug: the app bounds four outbound calls with
+`AbortSignal.any([callerSignal, AbortSignal.timeout(ms)])` (Whisper
+per-attempt, both TTS providers' per-attempt, the brain's overall deadline),
+but **Node 20's undici never aborts a fetch whose signal is an
+`AbortSignal.any()` composite** — the composite fires (its `abort` event and
+`aborted` flag both work, and aborting the caller side still cancels the
+fetch, which is why Stop/disconnect always worked), but the timeout side is
+ignored by the in-flight request. Inside the `node:20-slim` containers a hung
+Whisper/TTS endpoint or a hung brain call therefore blocked the request
+**forever**. It only worked on Node ≥ 24, and every host-side suite run used
+the hosts' newer Node (vm104 v24.19.0; the DR hosts have no host node at
+all), so the suites never caught it.
+
+**Fix:** a new `combinedSignal(signal, timeoutMs)` helper in `server.js`
+wires a plain `AbortController` to both sources (caller abort + per-attempt
+deadline) and returns its signal; undici aborts reliably on it on every Node
+version. All four call sites (Whisper, Kokoro TTS, ElevenLabs TTS, brain
+overall deadline) now use it. The timeout abort reason is a `TimeoutError`
+DOMException with the native wording, so `error.message` / error names are
+unchanged on Node ≥ 24 — behavior there is identical (same timeouts, same
+error wording); the brain deadline check (`totalSignal.aborted &&
+!signal.aborted`) is unaffected.
+
+**Changed files (deployed to the image):** `server.js` only (version marker →
+2026.10.29-2; new `combinedSignal` helper; the four `AbortSignal.any` call
+sites). Plus `AGENTS.md` (release note), not in the image.
+
+**Tests:** unit 220/220 and browser 71 pass / 0 fail / 2 skipped — unchanged,
+no new tests: the pre-existing "hung Whisper returns a bounded timeout
+instead of blocking forever" unit test is the regression test for this fix
+(it fails in a Node 20 container without it). New verification: the unit
+suite now runs **in the container** (Node 20.20.2) on every host —
+`docker cp tests jarvis:/app/tests` then `env -i node --test
+tests/*.test.mjs` (the production compose env breaks unrelated test
+expectations, hence the clean env). Pre-fix in-container: 1 failure +
+cascade-cancel (the hung-Whisper test); post-fix: **220/220 on all three
+hosts**.
+
+**Rollout (lockstep, image file `server.js` only on vm104/gra-1 — they were
+already on the 2026.10.29-1 image; full 11-file set on lim-1, which was still
+on 2026.10.26-11):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-2-20261029T125443Z/before.tar.gz` (server.js),
+  scp (disk md5 = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.29-2`, in-image
+  md5 matches, host unit suite 220/220, in-container unit suite 220/220.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-2-20261029T125754Z/before.tar.gz`
+  (server.js), same (md5 identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-2`, in-container unit suite
+  220/220.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-2-20261029T125908Z/before.tar.gz`
+  (all 11 files — it had the 2026.10.26-11 tree), scp all 11 files (md5s
+  identical to vm104/gra-1), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-2`, in-container unit suite
+  220/220.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`cfd4af04101c347a449165515a86d5c5`, `graphdb.js`
+`0e750c5374305f1270e28c604c10f423`, `public/app.js`
+`7e539a2d88a80be1e7c8da833456a539`, `public/index.html`
+`ba17bf1984befbef90f84fa28fcbdbb2`, `public/style.css`
+`8ad979b133a03d25d1bcbf3da492ceb0`, `public/graph-page.js`
+`aa1adfc574cecaa9c7788dc0e00c4620`, `public/graph.html`
+`c1b55a9d42cbeb34c065c9d884c4a3ae`.
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed). Browsers need a
+hard refresh (Ctrl+Shift+R) to pick up the two new danger buttons. All three
+deployments are now at `2026.10.29-2`, identical in-image and on disk.
