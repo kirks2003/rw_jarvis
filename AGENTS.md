@@ -366,10 +366,26 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-1`
+- Latest: `2026.10.29-2`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-2` (this repo):** fixed the server-side request deadlines that
+  had silently stopped firing inside the container. The app bounds four
+  outbound calls with `AbortSignal.any([callerSignal, AbortSignal.timeout(ms)])`
+  (the Whisper per-attempt timeout, both TTS providers' per-attempt timeouts,
+  and the brain's overall deadline), but Node 20's undici never aborts a fetch
+  whose signal is an `AbortSignal.any()` composite — the composite signal
+  fires, the in-flight request keeps waiting — so a hung Whisper/TTS endpoint
+  or a hung brain call blocked the request forever in the `node:20-slim`
+  image (it only worked on Node ≥ 24, which is why the host test suites, run
+  on the hosts' newer Node, never caught it; the in-container suite does). The
+  new `combinedSignal(signal, ms)` helper wires a plain `AbortController` to
+  both sources (caller abort + per-attempt deadline) instead, which aborts
+  reliably on every Node version. Behavior on Node ≥ 24 is unchanged (same
+  timeouts, same error wording). Covered by the pre-existing
+  "hung Whisper returns a bounded timeout" unit test, which now also passes in
+  the container's Node 20. Rolled out to all three hosts 2026-10-29.
 - **`2026.10.29-1` (this repo):** two destructive "delete all" buttons, each
   scoped to the signed-in account's own data and each asking for a second,
   explicit confirm before it sends anything. (1) The **History search** panel

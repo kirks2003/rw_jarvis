@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-1").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-2").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -1983,6 +1983,20 @@ function silentWav(seconds = 0.25) {
   return Buffer.concat([header, data]);
 }
 
+// Node 20's undici never aborts a fetch whose signal is an AbortSignal.any()
+// composite (the composite fires, the request keeps waiting), so a plain
+// controller wired to both sources — the caller's abort and the per-attempt
+// deadline — which aborts reliably on every Node version the image may run.
+function combinedSignal(signal, timeoutMs) {
+  const controller = new AbortController();
+  const abort = (reason) => { if (!controller.signal.aborted) controller.abort(reason); };
+  if (signal?.aborted) abort(signal.reason);
+  else signal?.addEventListener("abort", () => abort(signal.reason), { once: true });
+  const timer = setTimeout(() => abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), timeoutMs);
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+  return controller.signal;
+}
+
 async function transcribeWithFailover(audioBuffer, mimeType, language, profile, requestId, signal) {
   if (!profile?.endpoints?.length) throw new Error("No Whisper endpoints configured");
   const attempts = [];
@@ -2007,7 +2021,7 @@ async function transcribeWithFailover(audioBuffer, mimeType, language, profile, 
       if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
       const response = await fetch(endpoint, {
         method: "POST", body: form, headers,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
+        signal: combinedSignal(signal, 20000),
       });
       const text = await response.text();
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 400)}`);
@@ -2068,7 +2082,7 @@ async function synthesizeWithFailover(text, speed, voice, profile, requestId, re
           response_format: "wav",
           speed,
         }),
-        signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
+        signal: combinedSignal(signal, 20000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
       const audio = Buffer.from(await response.arrayBuffer());
@@ -2113,7 +2127,7 @@ async function synthesizeWithElevenLabs(text, speed, voiceId, modelId, requestId
           speed: elevenSpeed,
         },
       }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
+      signal: combinedSignal(signal, 20000),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
     const audio = Buffer.from(await response.arrayBuffer());
@@ -3180,7 +3194,7 @@ function canonicalizeToolName(name) {
 
 async function runBrain({ messages, brainProfile, user, useTools, webTools: webToolsOn = false, webSourcesList = null, vikunjaTools = null, vikunjaClient = null, vikunjaToolNames = null, externalMcp = [], admin = false, lang = "de", historySettings = normalizeHistorySettings(), requestId, signal, headers, deadlineMs, maxTokens = BRAIN_MAX_TOKENS_DEFAULT, toolRounds = BRAIN_TOOL_ROUNDS_DEFAULT }) {
   const local = [...messages];
-  const totalSignal = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
+  const totalSignal = combinedSignal(signal, deadlineMs);
   // Web tool results collected for post-turn ingestion (the extractor reads
   // the search context the turn actually used), separate from the answer.
   const webResults = [];
