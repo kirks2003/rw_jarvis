@@ -28,7 +28,7 @@ const el = Object.fromEntries([
   "mcpSwitches",
   "websearchSourceList", "websearchAddForm", "websearchAddSource", "websearchAddUrl", "websearchAddButton", "websearchStatus",
   "speakSwitch", "speakStatus",
-  "graphPanel", "graphStatus", "graphRefreshButton", "graphRemoveButton", "graphCanvas", "graph3dStage",
+  "graphPanel", "graphStatus", "graphRefreshButton", "graphRemoveButton", "graphDeleteAllButton", "graphCanvas", "graph3dStage",
   "graphView2dButton", "graphView3dButton", "graphRelevance", "graphSchema", "graphActivity",
   "graphEdgeBrightness", "graphEdgeBrightnessValue", "graphEntityLimit", "graphEntityLimitValue", "graphNodeSize", "graphNodeSizeValue", "graphTextSize", "graphTextSizeValue",
   "appearanceFontScale", "appearanceFontScaleValue", "appearanceFontFamily",
@@ -37,6 +37,7 @@ const el = Object.fromEntries([
   "appearanceResetButton", "appearanceStatus",
   "panelsToggle", "panelsBelow",
   "historySearchPanel", "historySearchReset", "historySearchStatus", "historySearchEngine",
+  "historyDeleteAll", "historyDeleteAllStatus",
   "historySearchDays", "historySearchDaysValue",
   "historySearchResults", "historySearchResultsValue",
   "historySearchSnippet", "historySearchSnippetValue",
@@ -729,6 +730,42 @@ el.historySearchReset?.addEventListener("click", () => {
   } catch { /* storage unavailable: the in-memory reset still applies */ }
   el.historySearchStatus.textContent = "Reset to the backend defaults.";
   log("settings", "History search settings reset to backend defaults");
+});
+
+// "Delete all prompt history": the one destructive action in this panel. A
+// second, explicit confirm names the scope (own account, or every account for
+// the admin session) before anything is sent; the backend then deletes only
+// what that scope may delete — the client never asks for another user's rows.
+el.historyDeleteAll?.addEventListener("click", async () => {
+  const admin = config?.admin === true;
+  const sure = window.confirm(
+    admin
+      ? `Delete ALL prompt history for EVERY account?\n\nThis removes every stored prompt and answer of every user on this server, including ${config.user}. This cannot be undone.`
+      : `Delete ALL your prompt history?\n\nThis removes every stored prompt and answer for your account (${config.user}). The brain's searchable memory is gone. This cannot be undone.`
+  );
+  if (!sure) return;
+  el.historyDeleteAll.disabled = true;
+  let response;
+  try {
+    response = await fetch("/api/conversation", { method: "DELETE", cache: "no-store" });
+  } catch (error) {
+    el.historyDeleteAllStatus.textContent = `Could not delete history: ${error.message}`;
+    el.historyDeleteAll.disabled = false;
+    log("history", "Could not delete prompt history", { message: error.message });
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  el.historyDeleteAll.disabled = false;
+  if (response.ok) {
+    el.historyDeleteAllStatus.textContent = admin
+      ? `Deleted ${data.deleted} stored turn${data.deleted === 1 ? "" : "s"} across every account.`
+      : `Deleted ${data.deleted} stored turn${data.deleted === 1 ? "" : "s"}.`;
+    log("history", `Deleted all prompt history (${admin ? "all accounts" : "own account"}): ${data.deleted} turns.`);
+    await loadConversationHistory();
+  } else {
+    el.historyDeleteAllStatus.textContent = `Could not delete history: ${data.message || data.error || `HTTP ${response.status}`}`;
+    log("history", "Could not delete prompt history", { message: data.message || data.error || `HTTP ${response.status}` });
+  }
 });
 
 // One switch per MCP server (the backend advertises the list in /api/config).
@@ -1528,7 +1565,9 @@ async function loadGraph(center, { forceStatus = false } = {}) {
           ? `${when} · ${ingestLine(entry)}`
           : entry.kind === "delete"
             ? `${when} · removed ${entry.name || "entity"}`
-            : entry.kind === "brain_write"
+            : entry.kind === "delete_all"
+              ? `${when} · deleted all graph data (${entry.entities ?? 0} entities${entry.scope === "all" ? ", all users" : ""})`
+              : entry.kind === "brain_write"
               ? `${when} · brain ${entry.ok === false ? "write failed" : "wrote"} ${entry.detail || entry.tool}`
               : `${when} · brain ${entry.ok ? "read" : "failed"} ${entry.tool}${entry.detail ? `: ${entry.detail}` : entry.error ? `: ${entry.error}` : ""}`;
         return item;
@@ -1583,6 +1622,38 @@ el.graphRemoveButton.addEventListener("click", async () => {
     await loadGraph();
   } else {
     log("graph", `Could not remove ${node.name}`, { message: data.message || data.error || `HTTP ${response.status}` });
+  }
+});
+
+// "Delete all graph data": the panel's one destructive action. A second,
+// explicit confirm names the scope (own account, or every user for the admin
+// session) before anything is sent; the backend then deletes only what that
+// scope may delete (the admin flag is derived server-side, never from here).
+el.graphDeleteAllButton.addEventListener("click", async () => {
+  const admin = config?.admin === true;
+  const sure = window.confirm(
+    admin
+      ? `Delete ALL knowledge graph data for EVERY user?\n\nThis removes every stored entity and fact of every user on this server, including ${config.user}. This cannot be undone.`
+      : `Delete ALL your knowledge graph data?\n\nThis removes every stored entity and fact for your account (${config.user}), plus your stored persona. This cannot be undone.`
+  );
+  if (!sure) return;
+  el.graphDeleteAllButton.disabled = true;
+  let response;
+  try {
+    response = await fetch("/api/graph/all", { method: "DELETE", cache: "no-store" });
+  } catch (error) {
+    log("graph", "Could not delete all graph data", { message: error.message });
+    el.graphDeleteAllButton.disabled = false;
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  el.graphDeleteAllButton.disabled = false;
+  if (response.ok) {
+    log("graph", `Deleted all graph data (${admin ? "all users" : "own account"}): ${data.entitiesDeleted} entities, ${data.personalitiesDeleted} persona${data.personalitiesDeleted === 1 ? "" : "s"}.`);
+    graphCenter = null;
+    await loadGraph();
+  } else {
+    log("graph", "Could not delete all graph data", { message: data.message || data.error || `HTTP ${response.status}` });
   }
 });
 
@@ -3727,6 +3798,13 @@ async function loadConfig(userFromLogin) {
     el.historySearchEngine.textContent = config.embeddingConfigured
       ? `Semantic search: on, model ${config.embeddingModel}. Searches match by meaning as well as by words.`
       : "Semantic search: not configured on this backend — searches match literal words only, and the similarity sliders have no effect.";
+    // The delete-all button is armed only for the signed-in account's own data
+    // — the admin session is the one that reaches every account, so its
+    // warning names that scope.
+    el.historyDeleteAll.title = config.admin
+      ? `Delete every stored prompt and answer of EVERY account on this server, including ${config.user}. Cannot be undone.`
+      : `Delete every stored prompt and answer for your account (${config.user}). Cannot be undone.`;
+    el.historyDeleteAll.disabled = false;
     let savedSpeakEnabled = null;
     try {
       savedSpeakEnabled = localStorage.getItem(speakEnabledStorageKey);
@@ -3820,6 +3898,15 @@ async function loadConfig(userFromLogin) {
       el.graphRelevance.value = savedRelevance;
     }
     el.graphRefreshButton.disabled = false;
+    // The delete-all button is armed only when a graph exists on this server;
+    // the admin session's warning names the every-user scope.
+    if (config.graphConfigured) {
+      el.graphDeleteAllButton.textContent = "Delete all graph data";
+      el.graphDeleteAllButton.title = config.admin
+        ? `Delete every stored entity and fact of EVERY user on this server, including ${config.user}. Cannot be undone.`
+        : `Delete every stored entity and fact for your account (${config.user}), plus your stored persona. Cannot be undone.`;
+      el.graphDeleteAllButton.disabled = false;
+    }
     setGraphView("3d"); // the live 3D view is the default panel view
     loadGraph();
     setInterval(() => { if (!document.hidden) loadGraph(); }, 15000);

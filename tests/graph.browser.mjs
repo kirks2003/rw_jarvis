@@ -267,6 +267,43 @@ test("the Remove button deletes the centred entity and refreshes the panel", asy
   assert.equal(await button.isVisible(), false);
 });
 
+test("the delete-all button confirms before wiping the caller's graph world", async (t) => {
+  const page = await openPanel(t);
+  // A live copy of the fixture the mocked DELETE mutates: after the wipe only
+  // the type-less :User node remains, which is what the panel reload draws.
+  let fixture = structuredClone(GRAPH_FIXTURE);
+  let deletes = 0;
+  await page.route("**/api/graph/subgraph*", (route) => route.fulfill({ json: fixture }));
+  await page.route("**/api/graph/status", (route) => route.fulfill({ json: {
+    nodes: fixture.nodes.length, edges: fixture.edges.length, labels: ["User", "Entity"], relTypes: [],
+  } }));
+  await page.route("**/api/graph/all", (route) => {
+    if (route.request().method() !== "DELETE") return route.fulfill({ status: 405, json: { error: "method_not_allowed" } });
+    deletes += 1;
+    fixture = { nodes: fixture.nodes.filter((node) => !node.type), edges: [] };
+    return route.fulfill({ json: { requestId: "r", entitiesDeleted: 5, personalitiesDeleted: 1, scope: "user" } });
+  });
+  await page.click("#graphView2dButton"); // the 3D view is the default
+  await page.waitForSelector("#graphCanvas circle");
+  const button = page.locator("#graphDeleteAllButton");
+  assert.equal(await button.isEnabled(), true, "armed once the config has landed");
+  assert.equal(await button.textContent(), "Delete all graph data");
+  // A dismissed confirm sends nothing.
+  await page.once("dialog", (dialog) => dialog.dismiss());
+  await button.click();
+  await page.waitForTimeout(200);
+  assert.equal(deletes, 0, "no DELETE while the confirm is dismissed");
+  // An accepted confirm sends exactly one DELETE and the panel reloads on the
+  // wiped world: only the :User node is drawn.
+  await page.once("dialog", (dialog) => dialog.accept());
+  await button.click();
+  assert.equal(deletes, 1);
+  await page.waitForFunction(() => document.querySelectorAll("#graphCanvas circle").length === 1);
+  const labels = await page.locator("#graphCanvas text").allTextContents();
+  assert.deepEqual(labels, ["Mila (you)"], `only the account node remains: ${JSON.stringify(labels)}`);
+  assert.match(await page.textContent("#graphStatus"), /1 nodes · 0 links/);
+});
+
 test("the graph panel degrades to a status line when unconfigured", async (t) => {
   const page = await openPanel(t, { configured: false });
   await page.waitForFunction(() => document.getElementById("graphStatus").textContent.includes("Not configured"));
@@ -585,4 +622,48 @@ test("clearing the search brings back the initial objects after a lone hit swapp
   }, { timeout: 5000 });
   assert.deepEqual(await names(), ["Berlin", "Lego", "Mila (you)", "Rocky"], "the initial objects are back");
   assert.equal(await dimmedCount(), 0, "no label stays dimmed");
+});
+
+test("the full page's delete-all button confirms before wiping the caller's world", async (t) => {
+  let deletes = 0;
+  const page = await openFullPage(t, {
+    routes: async (p) => {
+      await p.route("**/api/graph/all", (route) => {
+        if (route.request().method() !== "DELETE") return route.fulfill({ status: 405, json: { error: "method_not_allowed" } });
+        deletes += 1;
+        return route.fulfill({ json: { requestId: "r", entitiesDeleted: 5, personalitiesDeleted: 0, scope: "user" } });
+      });
+      // After the wipe the subgraph is only the :User node, so the 3D scene
+      // diff drops every entity label.
+      // The delete-all reload forces a fresh status (?refresh=), so the mock
+      // must match past the query string.
+      await p.route("**/api/graph/status*", (route) => route.fulfill({ json: {
+        nodes: deletes > 0 ? 1 : GRAPH_FIXTURE.nodes.length,
+        edges: deletes > 0 ? 0 : GRAPH_FIXTURE.edges.length,
+        labels: ["User", "Entity"], relTypes: [],
+      } }));
+      await p.route("**/api/graph/subgraph*", (route) => {
+        if (deletes > 0) {
+          return route.fulfill({ json: { nodes: GRAPH_FIXTURE.nodes.filter((node) => !node.type), edges: [] } });
+        }
+        return route.fulfill({ json: GRAPH_FIXTURE });
+      });
+    },
+  });
+  const button = page.locator("#graphDeleteAllButton");
+  assert.equal(await button.isEnabled(), true, "armed once the config has landed");
+  assert.equal(await button.textContent(), "Delete all graph data");
+  // A dismissed confirm sends nothing.
+  await page.once("dialog", (dialog) => dialog.dismiss());
+  await button.click();
+  await page.waitForTimeout(200);
+  assert.equal(deletes, 0, "no DELETE while the confirm is dismissed");
+  // An accepted confirm sends exactly one DELETE; the reload draws only the
+  // account node.
+  await page.once("dialog", (dialog) => dialog.accept());
+  await button.click();
+  await page.waitForFunction(() => {
+    const labels = [...document.querySelectorAll("#graph3dStage .graph-3d-labels span:not(.edge)")];
+    return labels.length === 1 && labels[0].textContent.startsWith("Mila");
+  }, null, { timeout: 5000 });
 });

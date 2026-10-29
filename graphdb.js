@@ -1153,6 +1153,30 @@ function createGraphStore({
       return { deleted: row ? 1 : 0, name: row ? row.name : null, orphansRemoved };
     },
 
+    // The panel's "delete all" action: everything of ONE owner's world — their
+    // entities, the fact edges between them (DETACH DELETE takes every edge
+    // touching a deleted entity, and every fact edge in the owner's world
+    // touches one of their entities or their :User node) and their stored
+    // Jarvis personality. Pinned to owner = the session user, so a non-admin
+    // call can never reach another user's data; the admin (set by the backend
+    // for admin sessions only, never from client input) deletes every owner's
+    // world at once. :User account nodes are structural markers, never data:
+    // they survive, so the owner's world comes back empty but intact.
+    async removeAll({ user, admin = false } = {}) {
+      const entityRows = rows(await run(writeClient,
+        "MATCH (e:Entity) WHERE " + (admin ? "true" : "e.owner = $user") +
+        " DETACH DELETE e RETURN count(e) AS n",
+        admin ? {} : { user }));
+      const personalityRows = rows(await run(writeClient,
+        "MATCH (p:Personality) WHERE " + (admin ? "true" : "p.owner = $user") +
+        " DELETE p RETURN count(p) AS n",
+        admin ? {} : { user }));
+      return {
+        entitiesDeleted: Number(entityRows[0]?.n ?? 0),
+        personalitiesDeleted: Number(personalityRows[0]?.n ?? 0),
+      };
+    },
+
     async close() {
       await readClient.close().catch(() => {});
       await writeClient.close().catch(() => {});
@@ -1698,6 +1722,27 @@ function createMemoryStore(users = []) {
       // the entity connected, so the policy sweep runs for its owner.
       const orphansRemoved = sweepDisconnected(node.owner);
       return { deleted: 1, name: node.name, orphansRemoved };
+    },
+
+    // Mirrors the Neo4j store's "delete all" action: every entity the caller
+    // owns (admin: every entity), the edges touching them and their stored
+    // personality. :User account nodes are never data, so they survive.
+    async removeAll({ user, admin = false } = {}) {
+      const doomed = [...nodes.values()]
+        .filter((node) => node.props.role !== "user" && (admin || node.owner === user));
+      const doomedIds = new Set(doomed.map((node) => node.id));
+      for (const node of doomed) nodes.delete(node.id);
+      for (let i = edges.length - 1; i >= 0; i -= 1) {
+        if (doomedIds.has(edges[i].source) || doomedIds.has(edges[i].target)) edges.splice(i, 1);
+      }
+      let personalitiesDeleted = 0;
+      if (admin) {
+        personalitiesDeleted = personalities.size;
+        personalities.clear();
+      } else if (personalities.delete(user)) {
+        personalitiesDeleted = 1;
+      }
+      return { entitiesDeleted: doomed.length, personalitiesDeleted };
     },
 
     async close() {},

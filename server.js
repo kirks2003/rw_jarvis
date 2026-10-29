@@ -12,7 +12,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.26-11").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-1").trim();
 
 const parsedUsers = parseUsers(process.env.USERS || "Mila,Roman,admin");
 
@@ -454,6 +454,14 @@ function openConversationDb(dbPath) {
       WHERE c.user = @user AND c.ts >= @floor`),
     countEmbedded: db.prepare(`SELECT COUNT(*) AS n FROM conversation_embeddings WHERE model = @model`),
     selectRecent: db.prepare("SELECT ts, prompt, answer, sources FROM conversations WHERE user = @user ORDER BY ts DESC, id DESC LIMIT @limit"),
+    // The "delete all history" action. The embeddings are removed explicitly
+    // before the turns: the declared ON DELETE CASCADE is inert on this
+    // connection (SQLite foreign keys are off unless the pragma is set), and
+    // an orphaned vector would otherwise ride back into the semantic search.
+    deleteEmbeddingsForUser: db.prepare("DELETE FROM conversation_embeddings WHERE conversation_id IN (SELECT id FROM conversations WHERE user = @user)"),
+    deleteEmbeddingsAll: db.prepare("DELETE FROM conversation_embeddings"),
+    deleteForUser: db.prepare("DELETE FROM conversations WHERE user = @user"),
+    deleteAll: db.prepare("DELETE FROM conversations"),
     // Free-text search over this user's own stored turns, newest first. The
     // term list is variable, so the WHERE clause is built per call — the
     // terms themselves are always bound parameters, never interpolated, and
@@ -1501,6 +1509,24 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { requestId, entry: { ...entry, sources: conversationStoredSources(entry.sources) } });
     }
 
+    // The "delete all history" action. A user deletes ONLY their own turns;
+    // the admin session (derived from the signed-in user, never from the
+    // request) deletes every user's turns. The in-memory short-term cache is
+    // dropped for the affected user(s) so the brain's next turn starts clean.
+    if (req.method === "DELETE" && pathname === "/api/conversation") {
+      const admin = isAdmin(req.user);
+      if (admin) {
+        conversationStore.deleteEmbeddingsAll.run();
+        const deleted = conversationStore.deleteAll.run().changes;
+        conversations.clear();
+        return json(res, 200, { requestId, deleted, scope: "all" });
+      }
+      conversationStore.deleteEmbeddingsForUser.run({ user: req.user });
+      const deleted = conversationStore.deleteForUser.run({ user: req.user }).changes;
+      conversations.delete(req.user);
+      return json(res, 200, { requestId, deleted, scope: "user" });
+    }
+
     // The per-user websearch source list (the Websearch sources panel). This
     // backend is the only writer of the list: the brain neither reads nor
     // changes it (it is injected per MCP call and absent from the tool
@@ -1597,6 +1623,23 @@ const server = http.createServer(async (req, res) => {
         if (!result.deleted) return json(res, 404, { error: "entity_not_found", requestId });
         recordGraphActivity({ kind: "delete", user: req.user, name: result.name });
         return json(res, 200, { requestId, ...result });
+      } catch (error) {
+        return json(res, 502, { error: "graph_unavailable", message: error.message, requestId });
+      }
+    }
+
+    // The panel's "delete all" action: the signed-in user wipes their own
+    // graph world (entities, fact edges, stored personality); the admin
+    // session wipes every user's world. :User account nodes survive. Like the
+    // single-entity delete above, only reachable as a deliberate UI action —
+    // the brain's MCP server has no such tool.
+    if (req.method === "DELETE" && pathname === "/api/graph/all") {
+      if (!graphStore) return json(res, 503, { error: "graph_not_configured", requestId });
+      try {
+        const admin = isAdmin(req.user);
+        const result = await graphStore.removeAll({ user: req.user, admin });
+        recordGraphActivity({ kind: "delete_all", user: req.user, entities: result.entitiesDeleted, scope: admin ? "all" : "user" });
+        return json(res, 200, { requestId, ...result, scope: admin ? "all" : "user" });
       } catch (error) {
         return json(res, 502, { error: "graph_unavailable", message: error.message, requestId });
       }

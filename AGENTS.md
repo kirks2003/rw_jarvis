@@ -79,7 +79,7 @@ are not part of the app.
 | `/api/login` | POST | None | Session login (200/403) |
 | `/api/logout` | POST | Session | Session logout |
 | `/api/config` | GET | Session | App configuration + MCP list + `appVersion` |
-| `/api/conversation` | GET/POST | Session | Conversation history CRUD |
+| `/api/conversation` | GET/POST/DELETE | Session | Conversation history CRUD; DELETE removes the caller's turns (admin: all users') |
 | `/api/chat` | POST | Session | AI chat completion |
 | `/api/transcribe` | POST | Session | Whisper audio transcription |
 | `/api/speak` | POST | Session | TTS speech synthesis |
@@ -87,7 +87,8 @@ are not part of the app.
 | `/api/costs` | GET | Session | OpenRouter + OVHcloud + ElevenLabs costs |
 | `/api/graph/status` | GET | Session | Graph DB status |
 | `/api/graph/subgraph` | GET | Session | Subgraph query |
-| `/api/graph/entity` | GET | Session | Entity lookup |
+| `/api/graph/entity` | GET/DELETE | Session | Entity lookup; DELETE removes one entity (caller's own, admin: any) |
+| `/api/graph/all` | DELETE | Session | Delete all graph data for the caller (admin: every user's); `:User` nodes kept |
 | `/api/graph/search` | GET | Session | Graph search |
 | `/api/graph/schema` | GET | Session | Graph schema |
 | `/api/graph/activity` | GET | Session | Graph activity |
@@ -365,10 +366,31 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.26-11`
+- Latest: `2026.10.29-1`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-1` (this repo):** two destructive "delete all" buttons, each
+  scoped to the signed-in account's own data and each asking for a second,
+  explicit confirm before it sends anything. (1) The **History search** panel
+  gained a **Delete all prompt history** button (`DELETE /api/conversation`):
+  a regular user deletes only their own stored turns, the **admin** session
+  deletes every account's turns; the derived embedding vectors are removed
+  with the turns (the declared `ON DELETE CASCADE` is inert because SQLite's
+  foreign-keys pragma is off, so the endpoint deletes both tables explicitly),
+  and the in-memory short-term cache is dropped for the affected account(s) so
+  the brain's next turn starts clean. (2) The **Knowledge graph** panel — and
+  the full-size graph page — gained a **Delete all graph data** button
+  (`DELETE /api/graph/all` → new `graphStore.removeAll` on both the Neo4j and
+  memory stores): a regular user wipes their own world (entities, fact edges,
+  stored persona), the **admin** wipes every user's world; `:User` account
+  nodes are structural markers, never data, so they survive and the account's
+  world comes back empty but intact. The admin flag is derived server-side
+  from the session, never from the client, so a regular user's call can never
+  reach another account's rows. Covered by unit tests (store-level isolation
+  + cypher pinning; endpoint scoping for both deletes) and browser tests
+  (confirm dismissed → no request; confirm accepted → one request, panel
+  refreshes). Rolled out to all three hosts 2026-10-29.
 - **`2026.10.26-11` (this repo):** two changes to the brain's per-request
   tool-rounds dial. (1) The **Brain tool rounds** range went up to **1–1000**
   (was 1–60) and gained a companion **text field** for exact values next to the
@@ -518,7 +540,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 216/216 pass
+# Baseline: 220/220 pass
 ```
 
 ### 9.2 Browser tests
@@ -527,7 +549,7 @@ npm test
 npm run test:browser
 # node --test tests/*.browser.mjs
 # pipeline.browser.mjs + graph.browser.mjs
-# Baseline: 68 pass / 0 fail / 2 skipped
+# Baseline: 71 pass / 0 fail / 2 skipped
 ```
 
 The 2 skips are intentional live-vm103 backend tests (real Whisper

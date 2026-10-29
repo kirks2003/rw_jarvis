@@ -1643,6 +1643,49 @@ test("the History search panel builds its sliders from the backend limits and se
   assert.equal(await page.evaluate(() => localStorage.getItem("jarvis.historySearch")), null);
 });
 
+test("the history panel's delete-all button confirms before wiping the caller's turns", { timeout: 45000 }, async (t) => {
+  // The in-memory backend store this test drives: the DELETE empties it, the
+  // GET serves what is left.
+  const stored = [
+    { prompt: "what time is it?", answer: "It is 14:05.", sources: null },
+    { prompt: "where is my car?", answer: "In the garage.", sources: null },
+  ];
+  let deletes = 0;
+  const { page } = await setup(t, async () => ({ text: "", noSpeech: true }), {
+    silent: true,
+    config: { user: "Mila", historySearch: { days: { min: 1, max: 365, step: 1, default: 90 } } },
+  });
+  await page.route("**/api/conversation*", (route) => {
+    if (route.request().method() === "DELETE") {
+      deletes += 1;
+      const deleted = stored.length;
+      stored.length = 0;
+      return route.fulfill({ json: { requestId: "r", deleted, scope: "user" } });
+    }
+    return route.fulfill({ json: { entries: stored.map((entry) => ({ ts: new Date().toISOString(), ...entry })) } });
+  });
+  const button = page.locator("#historyDeleteAll");
+  // Armed once the config has landed; the warning names the own-account scope.
+  await page.waitForFunction(() => !document.getElementById("historyDeleteAll").disabled);
+  assert.match(await page.getAttribute("#historyDeleteAll", "title"), /your account \(Mila\)/);
+  assert.match(await page.textContent("#historyDeleteAllStatus"), /^\s*$/, "no status before the first attempt");
+  // A dismissed confirm sends nothing.
+  await page.once("dialog", (dialog) => dialog.dismiss());
+  await button.click();
+  await page.waitForTimeout(200);
+  assert.equal(deletes, 0, "no DELETE while the confirm is dismissed");
+  // An accepted confirm sends exactly one DELETE, reports the count and the
+  // transcript reloads empty.
+  await page.once("dialog", (dialog) => dialog.accept());
+  await button.click();
+  assert.equal(deletes, 1, "exactly one DELETE for the accepted confirm");
+  // The handler sets the status once the DELETE response has landed.
+  await page.waitForFunction(() => /Deleted 2 stored turns/.test(
+    document.getElementById("historyDeleteAllStatus").textContent), null, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector("#conversationText .transcript-empty"));
+  assert.equal(await page.textContent("#conversationText .transcript-empty"), "No conversation yet.");
+});
+
 test("the hero switches sit left of Sign out, and the panels keep the conversation history", { timeout: 45000 }, async (t) => {
   // The harness intercepts every /api route, so the conversation endpoint is
   // intercepted too, backed by this test's own array (the in-memory backend

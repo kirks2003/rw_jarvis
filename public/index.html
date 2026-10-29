@@ -241,6 +241,8 @@
             </label>
             <button id="graphRemoveButton" type="button" hidden title="Remove the selected entity (and its links) from the knowledge graph"></button>
             <button id="graphRefreshButton" type="button" disabled>Refresh</button>
+            <button id="graphDeleteAllButton" type="button" class="danger-button" disabled
+              title="Delete every entity and fact stored for your account (and your stored persona). Cannot be undone."></button>
             <a class="graph-full-link" href="/graph.html" target="_blank" rel="noopener"
                title="Open the 3D and 2D graph views full size in a new tab, with larger entities and text">Full view ↗</a>
           </div>
@@ -496,6 +498,14 @@
             <p id="historySearchStatus" role="status">Loading history-search settings.</p>
           </div>
           <p id="historySearchEngine" class="history-search-engine">Semantic search: checking…</p>
+          <div class="history-search-danger">
+            <p class="history-search-danger-intro">
+              Deleting all history removes every stored prompt and answer for your account, from this server.
+              The brain loses the memory it searches with. This cannot be undone.
+            </p>
+            <button id="historyDeleteAll" type="button" class="danger-button" disabled>Delete all prompt history</button>
+            <p id="historyDeleteAllStatus" role="status"></p>
+          </div>
         </section>
       </div>
     </main>

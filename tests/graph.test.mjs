@@ -762,6 +762,32 @@ test("memory store: removeEntity deletes only the caller's own entity, with its 
   assert.deepEqual(await store.removeEntity({ user: "Mila", id: rocky.id }), { deleted: 0, name: null, orphansRemoved: [] });
 });
 
+test("memory store: removeAll deletes only the caller's own world, with its edges and persona", async () => {
+  const store = graphdb.createMemoryStore(["Mila", "Roman"]);
+  await store.writePersonality({ user: "Mila", text: "Sprich mit mir Deutsch." });
+  // Mila wipes her world: every entity she owns (Rocky, Berlin, Kokoro) plus
+  // the USES edge — and her stored personality. Roman's Coffee and the
+  // :User account nodes survive.
+  assert.deepEqual(await store.removeAll({ user: "Mila" }), { entitiesDeleted: 3, personalitiesDeleted: 1 });
+  const milaAfter = await store.subgraph({ user: "Mila" });
+  assert.ok(milaAfter.nodes.some((node) => node.name === "Mila" && !node.type), "Mila's :User node survives");
+  assert.equal(milaAfter.nodes.filter((node) => node.type).length, 0, "no entity of Mila's survives");
+  assert.equal(milaAfter.edges.length, 0, "the fact edges go with their entities");
+  assert.deepEqual(await store.readPersonality("Mila"), { text: null, updatedAt: null }, "Mila's persona is gone");
+  // Roman's world is untouched by Mila's wipe.
+  const romanAfter = await store.subgraph({ user: "Roman" });
+  assert.ok(romanAfter.nodes.some((node) => node.name === "Coffee"), "Roman's Coffee survived Mila's removeAll");
+  // Roman wipes his own (one entity, no persona of his).
+  assert.deepEqual(await store.removeAll({ user: "Roman" }), { entitiesDeleted: 1, personalitiesDeleted: 0 });
+  assert.equal((await store.subgraph({ user: "Roman" })).nodes.filter((node) => node.type).length, 0);
+  // The admin (never a data owner of record here) wipes every remaining
+  // world in one call — only the :User markers stay.
+  assert.deepEqual(await store.removeAll({ user: "admin", admin: true }), { entitiesDeleted: 0, personalitiesDeleted: 0 });
+  const adminAfter = await store.subgraph({ user: "admin", admin: true });
+  assert.deepEqual(adminAfter.nodes.map((node) => node.name).sort(), ["Mila", "Roman"]);
+  assert.equal(adminAfter.edges.length, 0);
+});
+
 // --- neo4j store (mock driver) --------------------------------------------------
 
 test("neo4j store: subgraph LIMIT is an integer parameter (the JS driver sends plain numbers as floats and Neo4j rejects them)", async () => {
@@ -860,6 +886,66 @@ test("neo4j store: removeEntity pins the owner-scoped DETACH DELETE (admin: no o
     driverFactory: () => ({ session: () => ({ run: async () => ({ records: [] }), close: async () => {} }) }),
   });
   assert.deepEqual(await empty.removeEntity({ user: "Mila", id: "4:xyz" }), { deleted: 0, name: null, orphansRemoved: [] });
+});
+
+test("neo4j store: removeAll pins the owner-scoped wipe (admin: no owner pin)", async () => {
+  const calls = [];
+  const fakeFactory = () => ({
+    session() {
+      return {
+        async run(cypher, params) {
+          calls.push({ cypher, params });
+          // Both statements report a row: the entity wipe counted 4, the
+          // personality wipe counted 1.
+          return { records: [{ toObject: () => ({ n: cypher.includes("Entity") ? 4 : 1 }) }] };
+        },
+        async close() {},
+      };
+    },
+  });
+  const store = graphdb.createGraphStore({
+    uri: "bolt://mock:7687",
+    database: "neo4j",
+    readUser: "r",
+    readPassword: "r",
+    writeUser: "w",
+    writePassword: "w",
+    driverFactory: fakeFactory,
+  });
+  const userResult = await store.removeAll({ user: "Mila" });
+  assert.deepEqual(userResult, { entitiesDeleted: 4, personalitiesDeleted: 1 });
+  const entityCall = calls[0];
+  // The wipe matches :Entity ONLY (a :User id can never match) and is pinned
+  // to owner = the session user, so a non-admin call can never reach another
+  // user's data. DETACH DELETE takes every fact edge touching the entities.
+  assert.ok(entityCall.cypher.includes("MATCH (e:Entity) WHERE e.owner = $user"), entityCall.cypher);
+  assert.ok(entityCall.cypher.includes("DETACH DELETE e"), "the entity edges go with the entities");
+  assert.equal(entityCall.params.user, "Mila");
+  // The persona is deleted with the world, pinned to the same owner.
+  const personaCall = calls[1];
+  assert.ok(personaCall.cypher.includes("MATCH (p:Personality) WHERE p.owner = $user"), personaCall.cypher);
+  assert.ok(personaCall.cypher.includes("DELETE p"), personaCall.cypher);
+  assert.equal(personaCall.params.user, "Mila");
+  // The admin variant drops the owner pin on BOTH statements — the backend
+  // sets admin: true for admin sessions only, never from client input.
+  await store.removeAll({ user: "admin", admin: true });
+  const adminEntity = calls[2];
+  assert.doesNotMatch(adminEntity.cypher, /e\.owner = \$user/, "no owner pinning in the admin entity wipe");
+  assert.deepEqual(adminEntity.params, {});
+  const adminPersona = calls[3];
+  assert.doesNotMatch(adminPersona.cypher, /p\.owner = \$user/, "no owner pinning in the admin persona wipe");
+  assert.deepEqual(adminPersona.params, {});
+  // A store whose deletes match nothing reports zero, not an error.
+  const empty = graphdb.createGraphStore({
+    uri: "bolt://mock:7687",
+    database: "neo4j",
+    readUser: "r",
+    readPassword: "r",
+    writeUser: "w",
+    writePassword: "w",
+    driverFactory: () => ({ session: () => ({ run: async () => ({ records: [] }), close: async () => {} }) }),
+  });
+  assert.deepEqual(await empty.removeAll({ user: "Mila" }), { entitiesDeleted: 0, personalitiesDeleted: 0 });
 });
 
 test("neo4j store: an introduced relation type is merged under its own name (owner-scoped endpoints)", async () => {

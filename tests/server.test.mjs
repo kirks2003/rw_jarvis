@@ -635,6 +635,49 @@ test("a stored Jarvis personality replaces the default butler persona in the sys
   assert.match(brainPrompt, /set-personality/);
 });
 
+test("delete all graph data removes only the caller's world (admin: every user's)", async (t) => {
+  const graphBackend = await startBackend({
+    GRAPH_MEMORY: "1",
+    GRAPH_PERSONALITY_SEED: JSON.stringify({ Mila: "Sprich mit mir Deutsch." }),
+  });
+  t.after(async () => { graphBackend.process.kill(); await once(graphBackend.process, "exit"); });
+  const origin = graphBackend.origin;
+  const mila = await login(origin, "Mila");
+  const roman = await login(origin, "Roman");
+  const admin = await login(origin, "admin");
+  // Mila's starter world (Rocky/Berlin/Kokoro) plus her seeded persona;
+  // Roman's: Coffee.
+  const before = await (await auth(origin, "/api/graph/subgraph", {}, mila)).json();
+  assert.ok(before.nodes.some((node) => node.name === "Rocky"), JSON.stringify(before.nodes));
+  // Mila's delete: her whole world and her persona, scope "user"...
+  const milaDelete = await auth(origin, "/api/graph/all", { method: "DELETE" }, mila);
+  assert.equal(milaDelete.status, 200);
+  const milaResult = await milaDelete.json();
+  assert.deepEqual(
+    { scope: milaResult.scope, entities: milaResult.entitiesDeleted, personas: milaResult.personalitiesDeleted },
+    { scope: "user", entities: 3, personas: 1 },
+  );
+  const milaAfter = await (await auth(origin, "/api/graph/subgraph", {}, mila)).json();
+  assert.ok(milaAfter.nodes.some((node) => node.name === "Mila" && !node.type), "Mila's :User node survives the wipe");
+  assert.equal(milaAfter.nodes.filter((node) => node.type).length, 0, "no entity of Mila's survives");
+  // ...and Roman's world is untouched.
+  const romanSub = await (await auth(origin, "/api/graph/subgraph", {}, roman)).json();
+  assert.ok(romanSub.nodes.some((node) => node.name === "Coffee"), "Roman's Coffee survived Mila's delete");
+  // The admin's delete: everything that remains, scope "all" — only the
+  // :User account nodes are left standing.
+  const adminDelete = await auth(origin, "/api/graph/all", { method: "DELETE" }, admin);
+  assert.equal(adminDelete.status, 200);
+  const adminResult = await adminDelete.json();
+  assert.deepEqual(
+    { scope: adminResult.scope, entities: adminResult.entitiesDeleted, personas: adminResult.personalitiesDeleted },
+    { scope: "all", entities: 1, personas: 0 },
+  );
+  const adminSub = await (await auth(origin, "/api/graph/subgraph", {}, admin)).json();
+  assert.ok(adminSub.nodes.every((node) => !node.type), `only :User nodes remain: ${JSON.stringify(adminSub.nodes)}`);
+  assert.ok(adminSub.nodes.some((node) => node.name === "Mila") && adminSub.nodes.some((node) => node.name === "Roman"));
+  assert.equal(adminSub.edges.length, 0);
+});
+
 test("save/track instructions land as WATCHES facts and the brain is told the graph auto-saves", async (t) => {
   mode = "graph-ingest";
   t.after(() => { mode = "success"; });
@@ -1589,6 +1632,47 @@ test("the conversation log stores finished turns per user, windowed to 24 days",
   assert.equal(junky.status, 200);
   const junkyLog = await (await auth(origin, "/api/conversation", {}, mila)).json();
   assert.deepEqual(junkyLog.entries.at(-1).sources, null);
+});
+
+test("delete all history removes only the caller's turns (admin: every user's)", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "jarvis-history-delete-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, "conversations.db");
+  const { process: child, origin: backendOrigin } = await startBackend({ CONVERSATION_DB_PATH: dbPath });
+  t.after(async () => { child.kill(); await once(child, "exit"); });
+  const mila = await login(backendOrigin, "Mila");
+  const roman = await login(backendOrigin, "Roman");
+  const admin = await login(backendOrigin, "admin");
+  const post = (cookie, prompt, answer) => auth(backendOrigin, "/api/conversation", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, answer }),
+  }, cookie);
+  await post(mila, "what time is it?", "It is 14:05.");
+  await post(mila, "where is my car?", "In the garage.");
+  await post(roman, "the mesh is green", "Yes.");
+  // Let the fire-and-forget embedding runs drain so the delete has vectors to
+  // take with it (the vectors are derived data and must not outlive turns).
+  await setTimeoutPromise(1500);
+  const db = new Database(dbPath, { readonly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_embeddings").get().n, 3, "every turn got a vector");
+  // Mila's delete: exactly her two turns, scope "user"...
+  const milaDelete = await auth(backendOrigin, "/api/conversation", { method: "DELETE" }, mila);
+  assert.equal(milaDelete.status, 200);
+  const milaResult = await milaDelete.json();
+  assert.deepEqual({ deleted: milaResult.deleted, scope: milaResult.scope }, { deleted: 2, scope: "user" });
+  // ...and Roman's turn (and its vector) is untouched.
+  const romanLog = await (await auth(backendOrigin, "/api/conversation", {}, roman)).json();
+  assert.equal(romanLog.entries.length, 1, JSON.stringify(romanLog.entries));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversations").get().n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_embeddings").get().n, 1, "the deleted turns' vectors are gone with them");
+  // The admin's delete: everything that remains, scope "all".
+  const adminDelete = await auth(backendOrigin, "/api/conversation", { method: "DELETE" }, admin);
+  assert.equal(adminDelete.status, 200);
+  const adminResult = await adminDelete.json();
+  assert.deepEqual({ deleted: adminResult.deleted, scope: adminResult.scope }, { deleted: 1, scope: "all" });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversations").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_embeddings").get().n, 0, "no orphaned vectors after the full wipe");
 });
 
 test("the brain can search the user's stored conversation, scoped to that user", async (t) => {

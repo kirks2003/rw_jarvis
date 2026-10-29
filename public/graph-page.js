@@ -8,7 +8,7 @@ import { renderGraph2d } from "./graph2d.js";
 
 const el = {};
 for (const id of ["graphStatus", "graphCanvas", "graph3dStage", "graphView2dButton", "graphView3dButton",
-  "graphEdgeBrightness", "graphEdgeBrightnessValue", "graphEntityLimit", "graphEntityLimitValue", "graphNodeSize", "graphNodeSizeValue", "graphTextSize", "graphTextSizeValue", "graphRefreshButton", "graphHint",
+  "graphEdgeBrightness", "graphEdgeBrightnessValue", "graphEntityLimit", "graphEntityLimitValue", "graphNodeSize", "graphNodeSizeValue", "graphTextSize", "graphTextSizeValue", "graphRefreshButton", "graphDeleteAllButton", "graphHint",
   "graphSearch", "graphSearchStatus", "graphSearchClear", "graphSearchResults", "graphUser"]) {
   el[id] = document.getElementById(id);
 }
@@ -294,6 +294,38 @@ el.graphRefreshButton.addEventListener("click", () => loadGraph(null, { forceSta
 el.graphView3dButton.addEventListener("click", () => setGraphView("3d"));
 el.graphView2dButton.addEventListener("click", () => setGraphView("2d"));
 
+// "Delete all graph data": the page's one destructive action. A second,
+// explicit confirm names the scope (own account, or every user for the admin
+// session) before anything is sent; the backend deletes only what that scope
+// may delete (the admin flag is derived server-side, never from here).
+el.graphDeleteAllButton.addEventListener("click", async () => {
+  const admin = config?.admin === true;
+  const sure = window.confirm(
+    admin
+      ? `Delete ALL knowledge graph data for EVERY user?\n\nThis removes every stored entity and fact of every user on this server, including ${config?.user}. This cannot be undone.`
+      : `Delete ALL your knowledge graph data?\n\nThis removes every stored entity and fact for your account (${config?.user}), plus your stored persona. This cannot be undone.`
+  );
+  if (!sure) return;
+  el.graphDeleteAllButton.disabled = true;
+  let response;
+  try {
+    response = await fetch("/api/graph/all", { method: "DELETE", cache: "no-store" });
+  } catch (error) {
+    el.graphStatus.textContent = `Could not delete all graph data: ${error.message}`;
+    el.graphDeleteAllButton.disabled = false;
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  el.graphDeleteAllButton.disabled = false;
+  if (response.ok) {
+    el.graphStatus.textContent = `Deleted all graph data (${admin ? "all users" : "own account"}): ${data.entitiesDeleted} entities, ${data.personalitiesDeleted} persona${data.personalitiesDeleted === 1 ? "" : "s"}.`;
+    graphCenter = null;
+    await loadGraph(null, { forceStatus: true });
+  } else {
+    el.graphStatus.textContent = `Could not delete all graph data: ${data.message || data.error || `HTTP ${response.status}`}`;
+  }
+});
+
 // --- Search ------------------------------------------------------------------
 // The search runs on the server against a full-text index, so it covers the
 // WHOLE graph, not just the nodes this page has loaded. Picking a hit re-centres
@@ -508,6 +540,11 @@ async function start() {
   graphDisplay.text = Number(el.graphTextSize.value) / 100;
   applyGraphScales();
   el.graphRefreshButton.disabled = false;
+  el.graphDeleteAllButton.textContent = "Delete all graph data";
+  el.graphDeleteAllButton.title = config.admin
+    ? `Delete every stored entity and fact of EVERY user on this server, including ${config.user}. Cannot be undone.`
+    : `Delete every stored entity and fact for your account (${config.user}), plus your stored persona. Cannot be undone.`;
+  el.graphDeleteAllButton.disabled = false;
   setGraphView("3d");
   await loadGraph();
   setInterval(() => { if (!document.hidden) loadGraph(); }, 15000);

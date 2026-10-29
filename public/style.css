@@ -2016,6 +2016,41 @@ menu {
   margin: 6px 0 0;
 }
 
+/* The panel's destructive action: a red-outlined variant of the standard
+   button so "delete all" reads as different from every save/refresh control. */
+.danger-button {
+  border-color: rgba(255, 92, 92, 0.55);
+  color: #ff8f8f;
+  background: rgba(255, 92, 92, 0.1);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(255, 92, 92, 0.22);
+}
+
+.history-search-danger {
+  border-top: 1px solid rgba(255, 92, 92, 0.25);
+  margin-top: 14px;
+  padding-top: 10px;
+}
+
+.history-search-danger-intro {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0 0 8px;
+}
+
+.history-search-danger .danger-button {
+  margin-right: 12px;
+}
+
+#historyDeleteAllStatus {
+  display: inline;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
 /* --- Cost panel (OpenRouter + OVHcloud + ElevenLabs) ---------------------- */
 /* Full-width row under the hero's top line. Hidden until /api/costs reports
    at least one configured section. */
