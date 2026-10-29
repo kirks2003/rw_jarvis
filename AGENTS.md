@@ -382,10 +382,24 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-5`
+- Latest: `2026.10.29-6`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-6` (this repo):** made the `create_task_kandev` argument
+  normalization actually run in production. `server.js` imported the whole
+  `mcp/normalize-external-args.cjs` module **object**
+  (`const normalizeExternalMcpArgs = require(...)`) and then called it as a
+  function — a `TypeError` the surrounding `try/catch` silently swallowed, so
+  the normalization (description → prompt, title truncation to the schema
+  `maxLength`, schema-key filtering, `local_path` inference) never applied to
+  a single real `create_task` call. Destructured the import
+  (`const { normalizeExternalMcpArgs } = require(...)`) so the call resolves to
+  the function. The function itself was already correct and unit-tested; only
+  the import was wrong. Verified end-to-end on gra-1: the brain created a task
+  with a 70-char title and the stored title was truncated to exactly 60 (the
+  schema `maxLength`), proving the normalization now runs. Rolled out to all
+  three hosts 2026-10-29.
 - **`2026.10.29-5` (this repo):** fixed the Kandev MCP "Unknown tool" — all
   three Kandev servers (nbg-1, vie-1, vm104) returned "Unknown tool" for every
   call even though the MCP servers were healthy. The Kandev MCP names every

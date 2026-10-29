@@ -5661,3 +5661,61 @@ function — a `TypeError` the surrounding `try/catch` silently swallows, so
 the `create_task_kandev` argument normalization never actually runs in
 production. The function itself is correct and unit-tested; the import needs
 destructuring (`const { normalizeExternalMcpArgs } = require(...)`).
+**Fixed in 2026.10.29-6 (below).**
+
+## 2026-10-29: 2026.10.29-6 — make the `create_task_kandev` arg normalization run
+
+Follow-up to the latent bug flagged in 2026.10.29-5: `server.js` imported the
+whole `mcp/normalize-external-args.cjs` module **object**
+(`const normalizeExternalMcpArgs = require(...)`), then called it as a
+function (in the external-tool dispatch). Calling an object throws a
+`TypeError`, which the surrounding `try/catch` silently swallowed and fell
+back to the raw args — so the `create_task_kandev` normalization (description
+→ prompt, title truncation to the schema `maxLength`, schema-key filtering,
+`local_path` inference) never actually ran in production, despite the function
+being correct and unit-tested.
+
+**Fix:** destructure the import
+(`const { normalizeExternalMcpArgs } = require(...)`) so the dispatch call
+resolves to the function. One-line change in `server.js` (plus the version
+marker).
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-6 + destructured import). No new/changed test files (the
+normalization is already unit-tested).
+
+**Tests:** unit 224/224 (unchanged). In-container (Node 20) unit suite 224/224
+on all three hosts.
+
+**Verification (live, gra-1):** a direct MCP handshake confirmed the real
+`create_task_kandev` schema has `title.maxLength: 60`. Then an authenticated
+`/api/chat` request (kandev-vm104 toggle on) instructed the brain to create a
+task with a 70-char title. The brain sent the full 70-char title; the stored
+task title came back truncated to **exactly 60 chars**
+(`ZZTEST-…abcdefghijklmnopq`) — proof the normalization now runs end-to-end.
+The test task was deleted afterward.
+
+**Rollout (lockstep, image file `server.js` only):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-6-20261029T155618Z/before.tar.gz` (server.js), scp
+  (disk md5 = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.29-6`, in-image
+  md5 matches, in-container unit suite 224/224.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-6-20261029T155643Z/before.tar.gz`,
+  same file (md5 identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-6`, in-container unit suite
+  224/224, plus the live normalization e2e above.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-6-20261029T155706Z/before.tar.gz`,
+  same file (md5 identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-6`, in-container unit suite
+  224/224.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`6a396163e3891153a357441097b923d7` (the other image files unchanged from
+2026.10.29-5).
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (re-login if a session went stale, as designed). All three
+deployments are now at `2026.10.29-6`, identical in-image and on disk.
