@@ -13,7 +13,7 @@ const publicDir = path.join(root, "public");
 const port = Number(process.env.PORT || 8094);
 // Release marker policy: bump this (or APP_RELEASE_VERSION) on every shipped
 // UI/runtime change so the header proves what is actually deployed.
-const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-6").trim();
+const APP_RELEASE_VERSION = String(process.env.APP_RELEASE_VERSION || "2026.10.29-7").trim();
 
 // A stray async rejection (e.g. a neo4j driver error escaping a catch) must
 // not take the whole service down: Node >= 15 crashes the process on
@@ -1126,6 +1126,28 @@ if (process.env.GITHUB_READONLY_ALLOWED_REPOS) {
       GITHUB_USER_AGENT: "jarvis-github-readonly-mcp/1.0",
     },
     "Read-only GitHub access for allowed repositories (metadata, file/directory reads, code search).",
+  );
+}
+if (process.env.N8N_GRA1_MCP_URL && process.env.N8N_GRA1_MCP_TOKEN) {
+  externalLocalMcp(
+    "n8n-gra1", "n8n gra-1",
+    [path.join(__dirname, "mcp", "remote-http.mjs"), process.env.N8N_GRA1_MCP_URL],
+    {
+      KANDEV_HTTP_HEADERS: JSON.stringify({ Authorization: `Bearer ${process.env.N8N_GRA1_MCP_TOKEN}` }),
+      KANDEV_HTTP_TIMEOUT_MS: String(process.env.N8N_GRA1_MCP_TIMEOUT_MS || 30000),
+    },
+    "The n8n workflow-automation server on gra-1 (a Checkmk alert-pipeline host): search its workflows and execution history, inspect a workflow, and trigger or test runs. Use it to answer whether a Checkmk alert was processed, what the workflow did, and whether the run succeeded or failed. Discovery (search_workflows, search_workflow_executions, get_workflow_execution) is read-only and safe; executing, publishing or editing workflows changes real automation, so do that only when the user explicitly asks.",
+  );
+}
+if (process.env.N8N_LIM1_MCP_URL && process.env.N8N_LIM1_MCP_TOKEN) {
+  externalLocalMcp(
+    "n8n-lim1", "n8n lim-1",
+    [path.join(__dirname, "mcp", "remote-http.mjs"), process.env.N8N_LIM1_MCP_URL],
+    {
+      KANDEV_HTTP_HEADERS: JSON.stringify({ Authorization: `Bearer ${process.env.N8N_LIM1_MCP_TOKEN}` }),
+      KANDEV_HTTP_TIMEOUT_MS: String(process.env.N8N_LIM1_MCP_TIMEOUT_MS || 30000),
+    },
+    "The n8n workflow-automation server on lim-1 (a Checkmk alert-pipeline host): search its workflows and execution history, inspect a workflow, and trigger or test runs. Use it to answer whether a Checkmk alert was processed, what the workflow did, and whether the run succeeded or failed. Discovery (search_workflows, search_workflow_executions, get_workflow_execution) is read-only and safe; executing, publishing or editing workflows changes real automation, so do that only when the user explicitly asks.",
   );
 }
 for (const entry of externalMcpServers) mcpServers.push({ id: entry.id, label: entry.label });

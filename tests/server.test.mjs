@@ -1277,6 +1277,26 @@ test("github-ro exposes read-only tools only", async (t) => {
   assert.ok(!githubTools.some((name) => /write|delete|update|create/i.test(name)));
 });
 
+test("n8n-gra1/n8n-lim1 MCP switches appear only when their env vars are set", async (t) => {
+  // The shared backend carries no N8N_* env, so both switches are hidden by default:
+  const defaultConfig = await (await auth(origin, "/api/config")).json();
+  assert.ok(!defaultConfig.mcpServers.some((s) => s.id === "n8n-gra1"), "n8n-gra1 hidden without env");
+  assert.ok(!defaultConfig.mcpServers.some((s) => s.id === "n8n-lim1"), "n8n-lim1 hidden without env");
+
+  // With URL + token set, both switches are advertised (the remote-http bridge
+  // connects lazily, so the placeholder URLs are never contacted at startup):
+  const { process: child, origin: n8nOrigin } = await startBackend({
+    N8N_GRA1_MCP_URL: "http://127.0.0.1:9/mcp-server/http",
+    N8N_GRA1_MCP_TOKEN: "test-gra-token",
+    N8N_LIM1_MCP_URL: "http://127.0.0.1:10/mcp-server/http",
+    N8N_LIM1_MCP_TOKEN: "test-lim-token",
+  });
+  t.after(async () => { child.kill(); await once(child, "exit"); });
+  const config = await (await auth(n8nOrigin, "/api/config")).json();
+  assert.ok(config.mcpServers.some((s) => s.id === "n8n-gra1" && s.label === "n8n gra-1"), "n8n-gra1 advertised");
+  assert.ok(config.mcpServers.some((s) => s.id === "n8n-lim1" && s.label === "n8n lim-1"), "n8n-lim1 advertised");
+});
+
 
 test("the TTS proxy rejects non-English languages instead of mispronouncing", async () => {
   mode = "success";
