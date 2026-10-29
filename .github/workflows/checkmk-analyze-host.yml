@@ -1,0 +1,87 @@
+name: Checkmk analyze host (lim + gra)
+
+on:
+  workflow_dispatch:
+    inputs:
+      affected_host:
+        description: Host alias or hostname to analyze (webhook target)
+        required: true
+        type: string
+      target_vm:
+        description: Optional VM id/reference from alert payload
+        required: false
+        default: "0"
+        type: string
+      state:
+        description: Alert state
+        required: false
+        default: CRIT
+        type: string
+
+jobs:
+  trigger-webhooks:
+    name: Trigger lim-1 and gra-1
+    runs-on: ubuntu-latest
+    env:
+      LIM_WEBHOOK_URL: ${{ secrets.N8N_LIM_CHECKMK_WEBHOOK_URL }}
+      GRA_WEBHOOK_URL: ${{ secrets.N8N_GRA_CHECKMK_WEBHOOK_URL }}
+      AFFECTED_HOST: ${{ inputs.affected_host }}
+      TARGET_VM: ${{ inputs.target_vm }}
+      ALERT_STATE: ${{ inputs.state }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${LIM_WEBHOOK_URL:-}" || { echo "Missing secret N8N_LIM_CHECKMK_WEBHOOK_URL"; exit 1; }
+          test -n "${GRA_WEBHOOK_URL:-}" || { echo "Missing secret N8N_GRA_CHECKMK_WEBHOOK_URL"; exit 1; }
+
+      - name: Build payload and trigger lim-1 webhook
+        shell: bash
+        run: |
+          set -euo pipefail
+          TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          PAYLOAD="$(jq -n \
+            --arg site "github-pipeline" \
+            --arg target "${AFFECTED_HOST}" \
+            --arg target_vm "${TARGET_VM}" \
+            --arg state "${ALERT_STATE}" \
+            --arg service "github-webhook-analyze-only" \
+            --arg summary "Analyze alerted host via MCP SSH (nbg-1/vie-1 jump, kandev key, alias host map), read-only, short summary only" \
+            --arg timestamp "${TS}" \
+            '{site:$site,target:$target,target_vm:$target_vm,state:$state,service:$service,summary:$summary,timestamp:$timestamp}')"
+
+          HTTP_CODE="$(curl -sS -o /tmp/lim-response.json -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            --data "${PAYLOAD}" \
+            "${LIM_WEBHOOK_URL}")"
+
+          echo "lim_http_code=${HTTP_CODE}"
+          cat /tmp/lim-response.json
+          test "${HTTP_CODE}" = "200"
+
+      - name: Trigger gra-1 webhook
+        shell: bash
+        run: |
+          set -euo pipefail
+          TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          PAYLOAD="$(jq -n \
+            --arg site "github-pipeline" \
+            --arg target "${AFFECTED_HOST}" \
+            --arg target_vm "${TARGET_VM}" \
+            --arg state "${ALERT_STATE}" \
+            --arg service "github-webhook-analyze-only" \
+            --arg summary "Analyze alerted host via MCP SSH (nbg-1/vie-1 jump, kandev key, alias host map), read-only, short summary only" \
+            --arg timestamp "${TS}" \
+            '{site:$site,target:$target,target_vm:$target_vm,state:$state,service:$service,summary:$summary,timestamp:$timestamp}')"
+
+          HTTP_CODE="$(curl -sS -o /tmp/gra-response.json -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            --data "${PAYLOAD}" \
+            "${GRA_WEBHOOK_URL}")"
+
+          echo "gra_http_code=${HTTP_CODE}"
+          cat /tmp/gra-response.json
+          test "${HTTP_CODE}" = "200"
