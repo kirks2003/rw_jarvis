@@ -17,14 +17,24 @@ on:
         required: false
         default: CRIT
         type: string
+      lim_webhook_url:
+        description: Optional lim-1 webhook URL override (else use secret)
+        required: false
+        default: ""
+        type: string
+      gra_webhook_url:
+        description: Optional gra-1 webhook URL override (else use secret)
+        required: false
+        default: ""
+        type: string
 
 jobs:
   trigger-webhooks:
     name: Trigger lim-1 and gra-1
     runs-on: ubuntu-latest
     env:
-      LIM_WEBHOOK_URL: ${{ secrets.N8N_LIM_CHECKMK_WEBHOOK_URL }}
-      GRA_WEBHOOK_URL: ${{ secrets.N8N_GRA_CHECKMK_WEBHOOK_URL }}
+      LIM_WEBHOOK_URL: ${{ inputs.lim_webhook_url != '' && inputs.lim_webhook_url || secrets.N8N_LIM_CHECKMK_WEBHOOK_URL }}
+      GRA_WEBHOOK_URL: ${{ inputs.gra_webhook_url != '' && inputs.gra_webhook_url || secrets.N8N_GRA_CHECKMK_WEBHOOK_URL }}
       AFFECTED_HOST: ${{ inputs.affected_host }}
       TARGET_VM: ${{ inputs.target_vm }}
       ALERT_STATE: ${{ inputs.state }}
@@ -33,8 +43,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${LIM_WEBHOOK_URL:-}" || { echo "Missing secret N8N_LIM_CHECKMK_WEBHOOK_URL"; exit 1; }
-          test -n "${GRA_WEBHOOK_URL:-}" || { echo "Missing secret N8N_GRA_CHECKMK_WEBHOOK_URL"; exit 1; }
+          test -n "${LIM_WEBHOOK_URL:-}" || { echo "Provide lim_webhook_url input or secret N8N_LIM_CHECKMK_WEBHOOK_URL"; exit 1; }
+          test -n "${GRA_WEBHOOK_URL:-}" || { echo "Provide gra_webhook_url input or secret N8N_GRA_CHECKMK_WEBHOOK_URL"; exit 1; }
 
       - name: Build payload and trigger lim-1 webhook
         shell: bash
