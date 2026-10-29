@@ -1022,6 +1022,48 @@ test("neo4j store: an introduced relation type is merged under its own name (own
   assert.ok(!calls.some((call) => call.cypher.includes("I AM NOT SURE")), "malformed types are dropped before any query");
 });
 
+test("neo4j store: the persona read queries reference only their bound alias (no stray 't' variable)", async () => {
+  const calls = [];
+  const fakeFactory = () => ({
+    session() {
+      return {
+        async run(cypher, params) { calls.push({ cypher, params }); return { records: [] }; },
+        async close() {},
+      };
+    },
+    async close() {},
+  });
+  const store = graphdb.createGraphStore({
+    uri: "bolt://mock:7687",
+    database: "neo4j",
+    readUser: "r",
+    readPassword: "r",
+    writeUser: "w",
+    writePassword: "w",
+    driverFactory: fakeFactory,
+    users: ["Roman", "Mila"],
+    personaMemory: { enabled: true },
+  });
+  await store.readContext("Roman");
+  const trait = calls.find((call) => call.cypher.includes("HAS_TRAIT"));
+  const preference = calls.find((call) => call.cypher.includes("HAS_PREFERENCE"));
+  const episode = calls.find((call) => call.cypher.includes("HAS_EPISODE"));
+  assert.ok(trait, "expected the trait persona query");
+  assert.ok(preference, "expected the preference persona query");
+  assert.ok(episode, "expected the episode persona query");
+  // Each persona query binds exactly one variable and must reference only that
+  // alias. A stray "t." in the preference or episode query is an undeclared
+  // variable that neo4j rejects at compile time, failing the whole read and —
+  // because the read gates the write-tool instructions — making the brain
+  // refuse to store anything ("graph is currently unreachable").
+  assert.ok(trait.cypher.includes("t.confidence"), "trait query binds t:Trait, so t.* is correct");
+  assert.ok(!/t\.(confidence|importance|decay_score)/.test(preference.cypher), "preference query must not reference the stray 't' alias: " + preference.cypher);
+  assert.ok(preference.cypher.includes("p.confidence"), "preference ORDER BY should use p.confidence");
+  assert.ok(!/t\.(confidence|importance|decay_score)/.test(episode.cypher), "episode query must not reference the stray 't' alias: " + episode.cypher);
+  assert.ok(episode.cypher.includes("ep.confidence"), "episode ORDER BY should use ep.confidence");
+  await store.close();
+});
+
 test("neo4j store: question subjects get a deterministic ASKED_ABOUT edge from the user's :User node", async () => {
   const calls = [];
   const fakeFactory = () => ({

@@ -917,7 +917,7 @@ function createGraphStore({
         run(readClient,
           "MATCH (:UserProfile {user: $user})-[:HAS_EPISODE]->(ep:Episode {user: $user}) " +
           "RETURN ep.summary AS summary, ep.ts AS ts, ep.confidence AS confidence, coalesce(ep.importance, 0.6) AS importance, coalesce(ep.decay_score, 1.0) AS decayScore " +
-          "ORDER BY (coalesce(t.confidence, 0.5) * coalesce(t.importance, 0.6) * coalesce(t.decay_score, 1.0)) DESC, ep.ts DESC LIMIT $limit",
+          "ORDER BY (coalesce(ep.confidence, 0.5) * coalesce(ep.importance, 0.6) * coalesce(ep.decay_score, 1.0)) DESC, ep.ts DESC LIMIT $limit",
           { user, limit: neo4j.int(personaMaxEpisodes) },
         ).then(rows),
       ]);
