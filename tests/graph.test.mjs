@@ -826,6 +826,39 @@ test("neo4j store: subgraph LIMIT is an integer parameter (the JS driver sends p
   assert.ok(neo4j.isInt(limitCall.params.limit), "limit must be a neo4j.int, not a float");
 });
 
+test("neo4j store: a failing database rejects once instead of leaking unhandled rejections", async (t) => {
+  // The status/schema/persona reads fan out over Promise.all. When the
+  // database is in a critical state every branch rejects: only the first may
+  // reach the caller, the rest must be observed or Node kills the process
+  // (which wipes every in-memory login session).
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.removeListener("unhandledRejection", onUnhandled));
+  const fakeFactory = () => ({
+    session() {
+      return {
+        async run() { throw new Error("The database has encountered a critical error, and needs to be restarted"); },
+        async close() {},
+      };
+    },
+  });
+  const store = graphdb.createGraphStore({
+    uri: "bolt://mock:7687",
+    database: "neo4j",
+    readUser: "r",
+    readPassword: "r",
+    writeUser: "w",
+    writePassword: "w",
+    driverFactory: fakeFactory,
+  });
+  await assert.rejects(store.status({ user: "Mila" }), /critical error/);
+  await assert.rejects(store.schema(), /critical error/);
+  // Give any stray branch rejection a chance to surface as unhandled.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(unhandled, []);
+});
+
 test("neo4j store: removeEntity pins the owner-scoped DETACH DELETE (admin: no owner pin)", async () => {
   const calls = [];
   const fakeFactory = () => ({

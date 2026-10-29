@@ -510,6 +510,16 @@ function createGraphStore({
     }
   }
 
+  // Promise.all surfaces only the FIRST rejection. When the database is in a
+  // critical state, EVERY branch of a fan-out rejects — the caller's catch
+  // handles the first, the rest go unhandled and kill the process (Node >=
+  // 15), wiping every in-memory session. Observe all branches so exactly one
+  // error propagates to the caller.
+  function allObserved(promises) {
+    for (const promise of promises) Promise.resolve(promise).catch(() => {});
+    return Promise.all(promises);
+  }
+
   const rows = (result) => result.records.map((record) => record.toObject());
   const personaEnabled = personaMemory?.enabled === true;
   const personaMaxTraits = Math.min(8, Math.max(1, Number(personaMemory?.maxTraits) || 3));
@@ -746,14 +756,14 @@ function createGraphStore({
       // Status must reflect the available graph size for dynamic UI controls
       // (for example the 3D visible-entities slider), so this world limit is
       // intentionally much higher than the panel default fetch size.
-      const [world, labelRows, relRows] = await Promise.all([
+      const [world, labelRows, relRows] = await allObserved([
         visibleWorld(user, MAX_STATUS_WORLD_NODES, null, admin),
         // db.labels()/db.relationshipTypes() read the token store: the answer
         // costs the same on ten nodes as on ten million. The equivalent
         // "MATCH (n) UNWIND labels(n)" is a full scan of the graph, and the
         // panel asks for this every 15 seconds.
-        rows(await run(readClient, "CALL db.labels() YIELD label RETURN label ORDER BY label LIMIT 50")),
-        rows(await run(readClient, "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t LIMIT 50")),
+        run(readClient, "CALL db.labels() YIELD label RETURN label ORDER BY label LIMIT 50").then(rows),
+        run(readClient, "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t LIMIT 50").then(rows),
       ]);
       // KNOWS is bookkeeping, not a link the panel should advertise.
       const relTypes = relRows.map((row) => row.t).filter((type) => type !== "KNOWS");
@@ -858,14 +868,14 @@ function createGraphStore({
     },
 
     async schema() {
-      const [labels, relTypes, propKeys] = await Promise.all([
+      const [labels, relTypes, propKeys] = await allObserved([
         // db.labels()/db.relationshipTypes() read the token store: the answer
         // costs the same on ten nodes as on ten million. The equivalent
         // "MATCH (n) UNWIND labels(n)" is a full scan of the graph, and the
         // panel asks for this every 15 seconds.
-        rows(await run(readClient, "CALL db.labels() YIELD label RETURN label ORDER BY label LIMIT 50")),
-        rows(await run(readClient, "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t LIMIT 50")),
-        rows(await run(readClient, "CALL db.propertyKeys() YIELD propertyKey AS key RETURN key ORDER BY key LIMIT 50")),
+        run(readClient, "CALL db.labels() YIELD label RETURN label ORDER BY label LIMIT 50").then(rows),
+        run(readClient, "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t LIMIT 50").then(rows),
+        run(readClient, "CALL db.propertyKeys() YIELD propertyKey AS key RETURN key ORDER BY key LIMIT 50").then(rows),
       ]);
       // KNOWS is bookkeeping, not a fact the panel should advertise.
       return {
@@ -889,27 +899,27 @@ function createGraphStore({
         userEntities: userRows.map((row) => ({ name: row.name, type: row.type })),
       };
       if (!personaEnabled) return context;
-      const [traitRows, preferenceRows, episodeRows] = await Promise.all([
-        rows(await run(readClient,
+     const [traitRows, preferenceRows, episodeRows] = await allObserved([
+        run(readClient,
           "MATCH (:UserProfile {user: $user})-[:HAS_TRAIT]->(t:Trait {user: $user}) " +
           "RETURN t.label AS label, t.value AS value, t.updated_at AS updatedAt, " +
           "coalesce(t.confidence, 0.5) AS confidence, coalesce(t.importance, 0.5) AS importance, coalesce(t.decay_score, 1.0) AS decayScore " +
           "ORDER BY (coalesce(t.confidence, 0.5) * coalesce(t.importance, 0.5) * coalesce(t.decay_score, 1.0)) DESC, t.updated_at DESC LIMIT $limit",
           { user, limit: neo4j.int(personaMaxTraits) },
-        )),
-        rows(await run(readClient,
+        ).then(rows),
+        run(readClient,
           "MATCH (:UserProfile {user: $user})-[:HAS_PREFERENCE]->(p:Preference {user: $user}) " +
           "RETURN p.label AS label, p.relation_type AS relationType, coalesce(p.negative, false) AS negative, p.updated_at AS updatedAt, " +
           "coalesce(p.confidence, 0.5) AS confidence, coalesce(p.importance, 0.5) AS importance, coalesce(p.decay_score, 1.0) AS decayScore " +
           "ORDER BY (coalesce(p.confidence, 0.5) * coalesce(p.importance, 0.5) * coalesce(p.decay_score, 1.0)) DESC, p.updated_at DESC LIMIT $limit",
           { user, limit: neo4j.int(personaMaxPreferences) },
-        )),
-        rows(await run(readClient,
+        ).then(rows),
+        run(readClient,
           "MATCH (:UserProfile {user: $user})-[:HAS_EPISODE]->(ep:Episode {user: $user}) " +
           "RETURN ep.summary AS summary, ep.ts AS ts, ep.confidence AS confidence, coalesce(ep.importance, 0.6) AS importance, coalesce(ep.decay_score, 1.0) AS decayScore " +
-          "ORDER BY (coalesce(ep.confidence, 0.5) * coalesce(ep.importance, 0.6) * coalesce(ep.decay_score, 1.0)) DESC, ep.ts DESC LIMIT $limit",
+          "ORDER BY (coalesce(t.confidence, 0.5) * coalesce(t.importance, 0.6) * coalesce(t.decay_score, 1.0)) DESC, ep.ts DESC LIMIT $limit",
           { user, limit: neo4j.int(personaMaxEpisodes) },
-        )),
+        ).then(rows),
       ]);
       context.persona = {
         traits: traitRows.map((row) => ({

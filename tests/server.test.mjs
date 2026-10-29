@@ -2240,3 +2240,28 @@ test("BRAND=a1 injects the a1 theme and logo into index.html only", async (t) =>
   const onDisk = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.doesNotMatch(onDisk, /theme-a1\.css/);
 });
+
+test("an unhandled rejection is logged, not fatal (a crash would wipe every in-memory session)", async (t) => {
+  // The neo4j driver can reject an internal promise the app never sees (it
+  // happened on a database critical error, 2026-10-29). Node >= 15 then kills
+  // the process; the container restarts and every login session is gone — the
+  // next request from the browser is a 403 "forbidden". The server must log
+  // and keep serving instead.
+  const dir = await mkdtemp(join(tmpdir(), "jarvis-unhandled-"));
+  t.after(async () => { rm(dir, { recursive: true, force: true }); });
+  await writeFile(join(dir, "probe.cjs"), "setTimeout(() => { Promise.reject(new Error(\"probe-unhandled\")); }, 1500);\n");
+  const before = logs.length;
+  const { process: child, origin: probeOrigin } = await startBackend({ NODE_OPTIONS: `--require ${join(dir, "probe.cjs")}` });
+  // Fire-and-forget: if the backend already died (the un-fixed crash), there
+  // is no "exit" left to await and awaiting it would hang the suite.
+  t.after(() => { child.kill(); });
+  const healthy = await fetch(`${probeOrigin}/api/health`);
+  assert.equal(healthy.status, 200);
+  // Let the probe's rejection fire, then prove the backend is still serving.
+  await setTimeoutPromise(2500);
+  assert.equal(child.exitCode, null, "the backend must survive the unhandled rejection");
+  const alive = await fetch(`${probeOrigin}/api/health`);
+  assert.equal(alive.status, 200);
+  assert.match(logs.slice(before), /"msg":"unhandled_rejection"/);
+  assert.match(logs.slice(before), /probe-unhandled/);
+});

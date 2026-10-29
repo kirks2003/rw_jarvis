@@ -341,13 +341,29 @@ Brand: `BRAND=a1` (white theme, a1 logo). Public via NPM row 11
 - **Does NOT sync:** `.env` files (host-specific), application code
   (code updates deploy separately to all three trees)
 
-> **Known issue (2026-10-27):** the script's stop step fails
-> (`no such service: jarvis-neo4j`), so `neo4j_data` is restored while the DR
-> Neo4j is still running and ends up in *critical error* state (happened on
-> both gra-1 and lim-1 after the 2026-10-26 run; fixed by restarting
-> `jarvis-neo4j` + `jarvis` on both hosts). The sync script must stop the DR
-> neo4j correctly and gate the restore on the DB being healthy. Full
+> **Known issue (2026-10-27, recurred 2026-10-29):** the script's stop step
+> fails (`no such service: jarvis-neo4j`), so `neo4j_data` is restored while
+> the DR Neo4j is still running and ends up in *critical error* state
+> (happened on both gra-1 and lim-1 after the 2026-10-26 run; recurred on
+> both after the 2026-10-29 run; each time fixed by restarting
+> `jarvis-neo4j` + `jarvis`). The corruption is latent until the first query
+> that touches the affected pages, so a host can look healthy for hours and
+> only break when someone opens the graph panel. The sync script must stop
+> the DR neo4j correctly and gate the restore on the DB being healthy. Full
 > verification report + fix plan: `DR_VERIFICATION_2026-10-27.md`.
+>
+> **Crash hardening (2026.10.29-3):** while the DR DBs sat in critical-error
+> state, every graph request on those hosts took the whole `jarvis` process
+> down (an unhandled rejection from the neo4j driver's connection-pool path,
+> `neo4j-driver` 5.28.3) → container restart → every in-memory login session
+> wiped → the browser's next request was a 403 "forbidden" loop. `server.js`
+> now installs a `process.on("unhandledRejection")` handler that logs
+> (`level: "error"`, `msg: "unhandled_rejection"`) and keeps serving, so a
+> broken DB degrades to `502 graph_unavailable` on the graph endpoints
+> instead of a crash loop; `graphdb.js` additionally observes every branch of
+> its `Promise.all` fan-outs (`allObserved`) so a failing database rejects
+> exactly once. Covered by unit tests (store fan-out rejects once; backend
+> survives a spawned unhandled rejection and stays serving).
 
 ### 6.3 Failover
 
@@ -366,10 +382,36 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-2`
+- Latest: `2026.10.29-3`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-3` (this repo):** made a broken knowledge-graph database a
+  degraded panel instead of a crash loop. When a Neo4j sits in *critical
+  error* state (the recurring nightly-sync corruption, see §6.2), `status()`
+  fans out three parallel queries: the first rejection reached the endpoint's
+  catch (a 502), but the neo4j driver (5.28.3) also rejects an internal
+  connection-pool promise the app never observes — an unhandled rejection
+  that Node ≥ 15 turns into a process crash → container restart → every
+  in-memory login session wiped → the browser's next request is a 403
+  "forbidden" loop (this is what the DR hosts did on 2026-10-29). Two
+  layers of hardening: (1) `server.js` installs a
+  `process.on("unhandledRejection")` handler that logs
+  (`level: "error"`, `msg: "unhandled_rejection"`, error + stack) and keeps
+  serving — any stray async error degrades the affected request, never the
+  process; (2) `graphdb.js` observes every branch of its `Promise.all`
+  fan-outs via a new `allObserved` helper (status, schema, persona read), so
+  a failing database rejects exactly once with a clean
+  `graph_unavailable` 502. Also fixed a latent typo in the persona
+  preference read (the query bound `p:Preference` but referenced
+  `t.confidence` / `t.updated_at` — undeclared variable; it could never have
+  succeeded, and the caller's catch silently fell back to no persona).
+  Covered by unit tests (a store whose driver always rejects surfaces
+  `status`/`schema` as exactly one error and no unhandled rejections; a
+  backend that receives a spawned unhandled rejection logs it and keeps
+  serving).
+  Rolled out to all three hosts 2026-10-29 (the DR hosts' `jarvis-neo4j` was
+  also restarted to clear the critical-error state).
 - **`2026.10.29-2` (this repo):** fixed the server-side request deadlines that
   had silently stopped firing inside the container. The app bounds four
   outbound calls with `AbortSignal.any([callerSignal, AbortSignal.timeout(ms)])`
@@ -556,7 +598,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 220/220 pass
+# Baseline: 222/222 pass
 ```
 
 ### 9.2 Browser tests
