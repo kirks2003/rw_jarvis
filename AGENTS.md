@@ -382,10 +382,28 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-4`
+- Latest: `2026.10.29-5`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-5` (this repo):** fixed the Kandev MCP "Unknown tool" — all
+  three Kandev servers (nbg-1, vie-1, vm104) returned "Unknown tool" for every
+  call even though the MCP servers were healthy. The Kandev MCP names every
+  tool with a redundant `_kandev` suffix (`list_workspaces_kandev`,
+  `create_task_kandev`, …); namespaced as `<id>_<tool>` that became
+  `kandev-nbg_list_workspaces_kandev` — a double "kandev". The brain "cleans"
+  the redundant suffix and calls `kandev-nbg_list_workspaces`, a name the
+  dispatch lookup didn't have (external names pass through
+  `canonicalizeToolName` unchanged), so every call fell through to "Unknown
+  tool". The servers themselves were fine — a direct MCP handshake from each
+  host lists all 42–47 tools. The new `externalToolDisplayName` helper
+  (`mcp/external-tool-name.cjs`, kandev servers only) drops the redundant
+  suffix from the *offered/lookup* name so the brain's natural call matches;
+  the dispatch still uses the original tool name for the real MCP call, so arg
+  normalization and the upstream call are unaffected. Verified end-to-end on
+  gra-1: the brain now calls `kandev-vm104_list_workspaces` and
+  `kandev-nbg_list_workspaces` and gets real workspace data back (both
+  dispatched `ok:true`). Rolled out to all three hosts 2026-10-29.
 - **`2026.10.29-4` (this repo):** restored graph reads — and with them the
   brain's ability to write to the graph — on all hosts. The persona read
   (`readContext`) fans out three parallel Cypher queries (traits, preferences,
@@ -614,7 +632,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 223/223 pass
+# Baseline: 224/224 pass
 ```
 
 ### 9.2 Browser tests

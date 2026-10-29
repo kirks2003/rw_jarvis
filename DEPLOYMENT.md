@@ -5585,3 +5585,79 @@ tools will keep failing on lim-1 until the token is refreshed. vm104 logged
 one Whisper per-attempt timeout (STT, not an MCP). The SSH `known_hosts`
 "Invalid cross-device link" warn on gra-1/lim-1 is benign (SSH still works;
 the file just cannot be rotated).
+
+## 2026-10-29: 2026.10.29-5 — fix the Kandev MCP "Unknown tool" (redundant `_kandev` suffix)
+
+The user reported all three Kandev MCPs broken on gra-1: the brain called
+`kandev-nbg_list_workspaces` / `kandev-vie1_list_workspaces` /
+`kandev-vm104_list_workspaces` and each came back "Unknown tool". The MCP
+servers were healthy — a direct MCP handshake from the host lists all 42–47
+tools on each. The real cause: the Kandev MCP names every tool with a
+redundant `_kandev` suffix (`list_workspaces_kandev`, `create_task_kandev`,
+…). The backend namespaces external tools as `<id>_<tool>`, so that became
+`kandev-nbg_list_workspaces_kandev` — a double "kandev". The brain "cleans"
+the redundant suffix and calls `kandev-nbg_list_workspaces`, a name the
+dispatch lookup didn't hold (external names pass through
+`canonicalizeToolName` unchanged), so every call fell through to "Unknown
+tool".
+
+**Fix:** a new `externalToolDisplayName` helper (`mcp/external-tool-name.cjs`,
+kandev servers only) drops the redundant suffix from the *offered/lookup*
+name, so the brain's natural call matches. The dispatch still uses the
+original tool name (`tool.name`) for the real MCP call, so arg normalization
+(`normalizeExternalMcpArgs`, keyed on the exact `create_task_kandev`) and the
+upstream call are unaffected.
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-5; uses the helper in `externalMcpToolsFor`),
+`mcp/external-tool-name.cjs` (new). Host-tree only (not in the image): the
+changed `tests/mcp.test.mjs`.
+
+**Tests:** unit 224/224 (was 223, +1: the display-name helper pins the
+suffix drop to kandev servers only). In-container (Node 20.20.2) unit suite
+224/224 on all three hosts.
+
+**Verification (live, all three hosts):** on gra-1 an authenticated chat
+request with the Kandev toggle on now dispatches cleanly — the brain calls
+`kandev-vm104_list_workspaces` and `kandev-nbg_list_workspaces` and both
+return real workspace data (log: `external_mcp_tool … ok:true` for each).
+The direct-MCP handshake (bypassing the app) lists 42 tools on kandev-vm104
+and 47 on kandev-nbg/vie1, confirming the servers and the SSH bridges were
+never the problem.
+
+**Rollout (lockstep, image files `server.js` + `mcp/external-tool-name.cjs`;
+the changed test file synced to the host trees):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-5-20261029T151449Z/before.tar.gz` (server.js +
+  mcp/), scp 3 files (disk md5s = local), `docker compose build` +
+  `up -d --force-recreate`, `running|healthy`, `/api/health` 200,
+  `appVersion 2026.10.29-5`, in-image md5s match, in-container unit suite
+  224/224.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-5-20261029T151714Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-5`, in-container unit suite
+  224/224, plus the live Kandev e2e dispatches above.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-5-20261029T151741Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-5`, in-container unit suite
+  224/224.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`3eb021fc29ba617f19a1cf24527d2735`, `mcp/external-tool-name.cjs`
+`3546a9f5b22fdb2d4374386c40629fc2` (the other image files unchanged from
+2026.10.29-4).
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed) — re-login if a
+session went stale. All three deployments are now at `2026.10.29-5`,
+identical in-image and on disk.
+
+**Separate latent bug found during triage (NOT fixed in this release):**
+`server.js` imports the whole `mcp/normalize-external-args.cjs` module object
+(`const normalizeExternalMcpArgs = require(...)`), then calls it as a
+function — a `TypeError` the surrounding `try/catch` silently swallows, so
+the `create_task_kandev` argument normalization never actually runs in
+production. The function itself is correct and unit-tested; the import needs
+destructuring (`const { normalizeExternalMcpArgs } = require(...)`).
