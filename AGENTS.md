@@ -254,13 +254,44 @@ vm104 only per owner decision (privacy boundary):
 > is brand-neutral and fully env-gated — a server only starts when its env
 > vars are set.
 
-### 4.3 MCP default-on behavior (2026-10-23)
+### 4.3 n8n workflow-automation MCPs (env-gated, all three hosts)
+
+`n8n-gra1` and `n8n-lim1` bridge Jarvis to the built-in MCP endpoints of the
+two n8n instances on the DR Docker VMs (gra-1 `192.168.116.11:5678`, lim-1
+`192.168.115.11:5678`) over the stdio↔Streamable-HTTP bridge
+(`mcp/remote-http.mjs`). Each is registered only when **both** the URL and the
+Bearer token are set, so a host without the env vars simply has no switch:
+
+| MCP id | Env prefix | Target |
+|--------|-----------|--------|
+| `n8n-gra1` | `N8N_GRA1_MCP_*` | n8n on gra-1 (Checkmk alert-pipeline host) |
+| `n8n-lim1` | `N8N_LIM1_MCP_*` | n8n on lim-1 (Checkmk alert-pipeline host) |
+
+The token is the n8n **MCP access token** (n8n: Settings → Instance-level MCP
+→ Connect a client → API key tab) — not the n8n REST API key. The n8n side
+must carry `N8N_MCP_MANAGED_BY_ENV=true` + `N8N_MCP_ACCESS_ENABLED=true` in
+the n8n container's compose (added to `rw_mesh/scripts/n8n/` on 2026-10-29).
+The brain gets ~50 tools per instance (`search_workflows`,
+`get_workflow_details`, `execute_workflow`, `publish_workflow`, …); the
+discovery tools are read-only and the `execute_*` / `publish_*` / edit tools
+run only on an explicit ask (see the registration notes in `server.js`). The
+per-MCP-request deadline is `..._TIMEOUT_MS` (default 30000); the whole run is
+still bounded by the Brain timeout. Covered by `tests/server.test.mjs`
+(env-gated registration).
+
+> **Privacy note (owner decision, 2026-10-29):** unlike the nine mesh-internal
+> MCPs above (vm104-only), the owner opted to run the two n8n MCPs on **all
+> three** private containers. The same four env vars (two LAN-IP URLs + two
+> tokens) apply to vm104, gra-1 and lim-1 alike. `gpu-2` (a1-jarvis) must
+> still NOT receive them.
+
+### 4.4 MCP default-on behavior (2026-10-23)
 
 In fresh browser profiles, all MCP switches are now **on by default**.
 If a browser has persisted `jarvis.mcp.* = false` from earlier sessions,
 toggle on once (or clear those keys) to adopt the new default.
 
-### 4.4 External MCP argument normalization (2026-10-25)
+### 4.5 External MCP argument normalization (2026-10-25)
 
 `mcp/normalize-external-args.cjs` coerces brain-supplied arguments for
 external (mesh-internal + github-ro) MCP calls against each tool's
@@ -268,7 +299,7 @@ external (mesh-internal + github-ro) MCP calls against each tool's
 `create_task_kandev`, …) before dispatch; failures fall back to the raw
 args. Covered by `tests/mcp.test.mjs`.
 
-### 4.5 Brain native tool-call recovery (2026-10-26)
+### 4.6 Brain native tool-call recovery (2026-10-26)
 
 The brain is offered tools via the OpenAI `tools` field, but DeepSeek/Qwen
 behind the OpenAI-compatible proxy intermittently answer with the model's
@@ -382,10 +413,30 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-6`
+- Latest: `2026.10.29-7`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-7` (this repo):** added the two **n8n workflow-automation
+  MCPs** (`n8n-gra1`, `n8n-lim1`). They bridge Jarvis to the built-in MCP
+  endpoints of the two n8n instances on the DR Docker VMs (gra-1
+  `192.168.116.11:5678`, lim-1 `192.168.115.11:5678`) over the existing
+  stdio↔Streamable-HTTP bridge (`mcp/remote-http.mjs`, auth via
+  `KANDEV_HTTP_HEADERS`). Each is registered only when **both** the URL and
+  the Bearer token are set (`N8N_GRA1_MCP_URL`/`_TOKEN`,
+  `N8N_LIM1_MCP_URL`/`_TOKEN`; optional `..._TIMEOUT_MS`, default 30000), so a
+  host without the env vars simply has no switch — same pattern as
+  `github-ro`. The token is the n8n **MCP access token** (n8n: Settings →
+  Instance-level MCP → Connect a client → API key tab), not the REST API key.
+  Per owner decision (2026-10-29) the two n8n MCPs run on **all three** private
+  containers (the same four env vars apply to vm104, gra-1 and lim-1 alike),
+  unlike the nine mesh-internal MCPs which stay vm104-only; `gpu-2`
+  (a1-jarvis) must still NOT receive them. The n8n side needed
+  `N8N_MCP_MANAGED_BY_ENV=true` + `N8N_MCP_ACCESS_ENABLED=true` in the n8n
+  container's compose to serve the endpoint (added to `rw_mesh/scripts/n8n/`
+  and deployed in a separate commit). Covered by a new env-gated registration
+  unit test in `tests/server.test.mjs` (switches hidden without env, advertised
+  with env) — baseline 224→**225**. Rolled out to all three hosts 2026-10-29.
 - **`2026.10.29-6` (this repo):** made the `create_task_kandev` argument
   normalization actually run in production. `server.js` imported the whole
   `mcp/normalize-external-args.cjs` module **object**
@@ -646,7 +697,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 224/224 pass
+# Baseline: 225/225 pass
 ```
 
 ### 9.2 Browser tests

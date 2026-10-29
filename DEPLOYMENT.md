@@ -5719,3 +5719,75 @@ The test task was deleted afterward.
 **Effect on live data:** none. The container restarts clear in-memory login
 sessions (re-login if a session went stale, as designed). All three
 deployments are now at `2026.10.29-6`, identical in-image and on disk.
+
+## 2026-10-29: 2026.10.29-7 — add the n8n-gra1 / n8n-lim1 workflow-automation MCPs
+
+Two new env-gated MCPs (`n8n-gra1`, `n8n-lim1`) bridge Jarvis to the built-in
+MCP endpoints of the two n8n instances on the DR Docker VMs (gra-1
+`192.168.116.11:5678`, lim-1 `192.168.115.11:5678`) over the existing
+stdio↔Streamable-HTTP bridge (`mcp/remote-http.mjs`, auth via
+`KANDEV_HTTP_HEADERS`). Each is registered only when **both** the URL and the
+Bearer token are set, so a host without the env vars simply has no switch —
+same pattern as `github-ro`. The token is the n8n **MCP access token**
+(n8n: Settings → Instance-level MCP → Connect a client → API key tab), not the
+REST API key. Per owner decision (2026-10-29) the two n8n MCPs run on **all
+three** private containers (the same four env vars apply to vm104, gra-1 and
+lim-1 alike), unlike the nine mesh-internal MCPs which stay vm104-only; `gpu-2`
+(a1-jarvis) must still NOT receive them.
+
+**Prerequisite (separate `rw_mesh` commit `1c0fd33`, deployed same day):** the
+n8n MCP endpoint was disabled on both n8n instances (a bare handshake returned
+`404 MCP access is disabled`). The n8n side needed
+`N8N_MCP_MANAGED_BY_ENV=true` + `N8N_MCP_ACCESS_ENABLED=true` in the n8n
+container's compose (`rw_mesh/scripts/n8n/compose.yaml.gra-1` +
+`compose.yaml.lim-1`). After redeploying both n8n containers the endpoints
+returned `401 Authorization header not sent` (enabled, awaiting Bearer token).
+The n8n dir on the DR hosts is root-owned, so that deploy ran via `sudo`.
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-7 + two `externalLocalMcp` blocks for `n8n-gra1` / `n8n-lim1` after
+the `github-ro` block). `tests/server.test.mjs` (new env-gated registration
+test: switches hidden without env, advertised with env) and `.env.example`
+(documented `N8N_*` vars) are host-side / repo-only.
+
+**Host-side env (added to each host's `.env`, mode 600, never in the repo):**
+`N8N_GRA1_MCP_URL=http://192.168.116.11:5678/mcp-server/http`,
+`N8N_GRA1_MCP_TOKEN=<gra n8n MCP token>`,
+`N8N_LIM1_MCP_URL=http://192.168.115.11:5678/mcp-server/http`,
+`N8N_LIM1_MCP_TOKEN=<lim n8n MCP token>`.
+
+**Tests:** unit 225/225 (was 224, +1 registration test). In-container (Node 20)
+unit suite 225/225 on all three hosts.
+
+**Verification (live e2e):** an authenticated `/api/chat` with the
+`n8n-gra1` toggle on (gra-1) and one with `n8n-lim1` on (lim-1) each had the
+brain call `search_workflows`; the remote-http bridge connected to the real n8n
+endpoint with the Bearer token and n8n returned live data — one workflow,
+"Checkmk Alarm Receiver" (active, created 2026-10-29), on both instances.
+(`/api/config` on all three hosts advertises both `n8n-gra1` and `n8n-lim1`
+switches.)
+
+**Rollout (lockstep, image file `server.js` only):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-7-20261029T172503Z/before.tar.gz`, scp (disk md5 =
+  local), `docker compose build` + `up -d --force-recreate`, `running`,
+  `/api/health` 200, `appVersion 2026.10.29-7`, in-image md5 matches,
+  in-container unit suite 225/225.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-7-20261029T173005Z/before.tar.gz`,
+  same file (md5 identical), same build/recreate. `running`, `/api/health` 200,
+  `appVersion 2026.10.29-7`, in-container unit suite 225/225, plus the
+  `n8n-gra1` live e2e above.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-7-20261029T173153Z/before.tar.gz`,
+  same file (md5 identical), same build/recreate. `running`, `/api/health` 200,
+  `appVersion 2026.10.29-7`, in-container unit suite 225/225, plus the
+  `n8n-lim1` live e2e above.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`fab37dcef600cdf68bb44a1ffbc773b2` (the other image files unchanged from
+2026.10.29-6).
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (re-login if a session went stale, as designed). All three
+deployments are now at `2026.10.29-7`, identical in-image and on disk.
