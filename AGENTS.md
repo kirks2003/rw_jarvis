@@ -382,10 +382,26 @@ NPM container. Single-field DB edit per hub, ~2 min.
 - Bump on every shipped Jarvis app/runtime change
 - Must be identical on all 3 deployments after rollout
 - Policy details: `VERSIONING_POLICY.txt`
-- Latest: `2026.10.29-3`
+- Latest: `2026.10.29-4`
   
 ### 7.1 Release notes
   
+- **`2026.10.29-4` (this repo):** restored graph reads — and with them the
+  brain's ability to write to the graph — on all hosts. The persona read
+  (`readContext`) fans out three parallel Cypher queries (traits, preferences,
+  episodes); the **episode** query bound `ep:Episode` but ordered by
+  `t.confidence` / `t.importance` / `t.decay_score`, an undeclared variable
+  neo4j rejects at compile time. `readContext()` therefore threw on every
+  graph-on request, the `chat()` handler's catch told the brain the graph was
+  "currently unreachable" (the graph write-tool instructions are pushed inside
+  the same try-block as the read), and the brain refused to store anything —
+  "I'm afraid I can't permanently persist data into long-term storage at the
+  moment". The **preference** query had the identical alias typo (fixed in
+  `2026.10.29-3`); the episode query's was missed. Fixed the ORDER BY to
+  reference `ep.*` and added a regression test that pins all three persona
+  queries to their bound aliases. Verified against the live neo4j on all three
+  hosts (the exact `readContext` call that was throwing now returns the user's
+  entities + persona). Rolled out to all three hosts 2026-10-29.
 - **`2026.10.29-3` (this repo):** made a broken knowledge-graph database a
   degraded panel instead of a crash loop. When a Neo4j sits in *critical
   error* state (the recurring nightly-sync corruption, see §6.2), `status()`
@@ -598,7 +614,7 @@ TTL).
 ```bash
 npm test
 # node --test tests/*.test.mjs
-# Baseline: 222/222 pass
+# Baseline: 223/223 pass
 ```
 
 ### 9.2 Browser tests

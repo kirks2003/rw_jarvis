@@ -5515,3 +5515,73 @@ sessions (the next sign-in re-establishes them, as designed) — re-login if a
 session went stale. All three deployments are now at `2026.10.29-3`,
 identical in-image and on disk. The DR Neo4j root cause (the nightly sync
 stop step) remains an open `rw_mesh` fix — see the 2026-10-27 report.
+
+## 2026-10-29: 2026.10.29-4 — fix the persona episode query (graph reads + writes restored)
+
+The persona read (`readContext`) fans out three parallel Cypher queries
+(traits, preferences, episodes). The *episode* query bound `ep:Episode` but
+ordered by `t.confidence` / `t.importance` / `t.decay_score` — an undeclared
+variable neo4j rejects at compile time (`Variable 't' not defined`). The
+2026.10.29-3 release fixed the identical alias typo in the *preference*
+query but missed the *episode* query's. Because `readContext()` threw, the
+`chat()` handler's catch told the brain "the graph is currently unreachable"
+(the graph write-tool instructions are pushed inside the same try-block as
+the read), so the brain refused to store anything — "I'm afraid I can't
+permanently persist data into long-term storage at the moment". Every
+graph-on request on every host hit this (the `graph_context_failed` warn was
+in all three hosts' logs).
+
+**Fix (`graphdb.js`):** the episode query's `ORDER BY` now references
+`ep.confidence` / `ep.importance` / `ep.decay_score` (its bound alias)
+instead of the stray `t.*`. A regression test pins all three persona queries
+to their bound aliases so a repeat of this typo class is caught.
+
+**Changed files (deployed to the image):** `server.js` (version marker →
+2026.10.29-4), `graphdb.js` (the episode `ORDER BY` alias fix). Host-tree
+only (not in the image): the changed `tests/graph.test.mjs`.
+
+**Tests:** unit 223/223 (was 222, +1: the persona-query alias regression
+test). Browser 71 pass / 0 fail / 2 skipped (unchanged). In-container
+(Node 20.20.2) unit suite 223/223 on all three hosts.
+
+**Verification (live neo4j, all three hosts):** the exact `readContext`
+call that was throwing now succeeds — vm104 `userEntities=25
+preferences=6 episodes=0`, gra-1 `userEntities=13 preferences=6`, lim-1
+`userEntities=1 preferences=6` — so the brain gets the "graph ON + write
+tools" system message instead of "unreachable" and can store again.
+
+**Rollout (lockstep, image files `server.js` + `graphdb.js`; the changed
+test file synced to the host trees):**
+- **vm104** (`/home/ubuntu/docker/jarvis/`): backup
+  `jarvis-scoped-2026.10.29-4-20261029T143352Z/before.tar.gz`, scp 3 files
+  (disk md5s = local), `docker compose build` + `up -d --force-recreate`,
+  `running|healthy`, `/api/health` 200, `appVersion 2026.10.29-4`, in-image
+  md5s match, in-container unit suite 223/223.
+- **gra-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.116.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-4-20261029T143547Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-4`, in-container unit suite
+  223/223.
+- **lim-1** (`/home/ubuntu/docker/jarvis-dr/jarvis/`, 192.168.115.11 over the
+  mesh): backup `jarvis-scoped-2026.10.29-4-20261029T143724Z/before.tar.gz`,
+  same 3 files (md5s identical), same build/recreate. `running|healthy`,
+  `/api/health` 200, `appVersion 2026.10.29-4`, in-container unit suite
+  223/223.
+
+**In-image md5 (all three hosts, final state):** `server.js`
+`72c12640de42f4a837692c81e366aeed`, `graphdb.js`
+`7d225a03a3849e71fc188be5936b80fc` (the other five image files unchanged
+from 2026.10.29-3).
+
+**Effect on live data:** none. The container restarts clear in-memory login
+sessions (the next sign-in re-establishes them, as designed) — re-login if a
+session went stale. All three deployments are now at `2026.10.29-4`,
+identical in-image and on disk.
+
+**Separate issues seen during triage (host-side, not fixed by this release):**
+lim-1's vikunja MCP reports `GET /tokens -> 401` (invalid/expired token) —
+that is the host `.env` vikunja credential, not app code, so the vikunja MCP
+tools will keep failing on lim-1 until the token is refreshed. vm104 logged
+one Whisper per-attempt timeout (STT, not an MCP). The SSH `known_hosts`
+"Invalid cross-device link" warn on gra-1/lim-1 is benign (SSH still works;
+the file just cannot be rotated).
